@@ -1,0 +1,14 @@
+[package]
+name = "vibe-poc-clap-detector"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hound = "3.5"
+rustfft = "6.4"
+anyhow = "1.0"
+thiserror = "2.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
