@@ -189,3 +189,98 @@ pub fn detect(samples: &[f32], sample_rate: u32) -> Vec<ClapEvent>
 - `poc/double-clap` 시작: 본 PoC 의 `Vec<ClapEvent>` 를 입력으로 받아 150~600 ms
   간격 + 두 이벤트 유사도(에너지·flatness) 비교로 이중 박수 패턴 추출. 목업
   이벤트 배열로 시작 가능 (clap-detector 결과 안 기다림).
+
+## 2026-05-17
+
+### 목적
+
+`poc/double-clap` 진행. 가설: `poc/clap-detector` 가 뱉는 `ClapEvent` 시퀀스에
+대해 간격 게이트(150~600 ms) + 두 박수의 피크·flatness 유사도 비교만으로
+"박수-말-박수" 같은 가짜 패턴까지 거른 이중 박수 트리거를 만들 수 있다.
+
+이번 PoC 는 오디오 신호 처리를 다시 하지 않는다. `ClapEvent` 가 신호 처리 결과를
+요약한 인터페이스라는 가정에 기댄다 — PoC 끼리 머지 안 함 정책상 clap-detector 의
+`ClapEvent` 구조체를 그대로 옮겨 적었다 (의도된 중복).
+
+### 결정 사항
+
+- **인터페이스 계약 보강:** 계획 단계에서는 `match_pattern(...) -> Option<TriggerEvent>`
+  였으나, 오프라인 입력이라 한 시퀀스에 트리거가 여러 개 나올 수 있어
+  `Vec<TriggerEvent>` 로 확장. 슬라이딩 윈도우로 호출해도 동일하게 동작하도록
+  내부 상태는 두지 않음.
+- **`analyze` API 추가:** `match_pattern` 외에 기각 사유까지 노출하는 `analyze` 를
+  공개. PoC 의 핵심은 "왜 안 됐는지" 가 보여야 튜닝이 되므로 디버깅용으로 분리.
+  실시간 통합에서는 `match_pattern` 만 쓰면 됨.
+- **회귀 테스트 입력은 합성 `ClapEvent`:** wav 녹음 → clap-detector → 매처 파이프라인
+  검증은 본 통합에서 손으로 연결할 일이라 PoC 단계에서는 합성 이벤트 시나리오만으로
+  룰 동작을 확인. 13개 단위 테스트(빈/단일/정상/간격 게이트 양 끝/피크 격차/flatness
+  격차/3·4 박수 연속/기각 후 재매칭/경계값) 가 알고리즘 모든 분기를 커버.
+
+### 매칭 알고리즘 (4단계)
+
+1. **이웃 페어링** — 시간순 이벤트에서 인접한 두 박수를 후보 쌍으로 본다. 트리거가
+   인정된 쌍은 두 박수 모두 소비, 기각된 쌍은 두 번째 박수가 그 다음 박수와
+   다시 짝지을 수 있게 한 칸만 전진.
+2. **간격 게이트** — `min_interval_ms ≤ Δt ≤ max_interval_ms` (기본 150~600 ms).
+3. **피크 유사도** — `|peak_db_a - peak_db_b| ≤ 12 dB`.
+4. **광대역 유사도** — `|flatness_a - flatness_b| ≤ 0.25`.
+
+`confidence` 는 두 박수의 confidence 평균 + 피크/flatness/간격이 중심에 얼마나
+가까운지로 합성한 점수.
+
+### 진행 단계
+
+1. `main` 에서 `poc/double-clap` 분기.
+2. `cargo init` binary crate. 의존성: `anyhow`, `thiserror`, `serde`, `serde_json`
+   (JSON 입력 디버깅용). release profile 에 `lto = "thin"`.
+3. 모듈 구성 (`spec/code/rust/idioms.md`, `spec/code/rust/errors.md` 참고):
+   - `src/event.rs` — `ClapEvent` (clap-detector 와 동일 필드, serde derive 추가).
+   - `src/matcher.rs` — `MatcherConfig`, `TriggerEvent`, `PairOutcome`,
+     `RejectReason`, `match_pattern`, `analyze`. 매처는 순수 함수.
+   - `src/lib.rs` + `src/main.rs` — JSON 파일 인자 또는 빌트인 데모 5개 실행.
+4. 단위 테스트 13개를 `matcher` 모듈 내부에 코로케이션. 모든 기각 사유와 경계값,
+   3·4 연속 박수 케이스까지 커버.
+5. `cargo fmt` + `cargo clippy --all-targets --all-features -- -D warnings` +
+   `cargo test` 모두 통과. 데모 출력으로 각 시나리오 결과 눈으로 확인.
+
+### 인터페이스 계약 (다음 PoC `poc/action-runner` 로 이어짐)
+
+```rust
+pub struct TriggerEvent {
+    pub first_at_ms: u64,
+    pub second_at_ms: u64,
+    pub interval_ms: u64,
+    pub confidence: f32,
+}
+
+pub fn match_pattern(events: &[ClapEvent], config: &MatcherConfig) -> Vec<TriggerEvent>
+```
+
+순수 함수. 호출자가 시간순 정렬 책임. action-runner 는 `TriggerEvent` 를 받아 실행할
+액션을 결정.
+
+### 데모 결과
+
+| 시나리오 | 결과 |
+|---|---|
+| 유사 박수 300 ms 간격 | TRIGGER conf=0.84 ✓ |
+| 간격 120 ms | reject: interval too short ✓ |
+| 간격 800 ms | reject: interval too long ✓ |
+| 피크 격차 20 dB | reject: peak mismatch ✓ |
+| 박수 3개 연속 (100/400/700 ms) | TRIGGER (1,2), 3번 미매칭 ✓ |
+
+### 발견 사항
+
+- **초기 `Option<TriggerEvent>` 시그니처의 한계:** 한 호출에서 트리거가 여러 개
+  나올 수 있는데(긴 wav 스트림 처리 시) `Option` 으로 묶으면 호출자가 외부 루프를
+  돌아야 한다. `Vec` 으로 받으면 슬라이딩 윈도우로 한 페어씩 잘라 호출해도 길이 0/1
+  결과로 동일하게 동작해 본 통합 시점에서 선택 폭이 넓어진다.
+- **유사도 게이트의 가짜 패턴 방어 한계:** "박수-기침-박수" 는 clap-detector 가
+  기침을 거른다면 매처는 보지도 못한다. 만약 기침이 박수로 잘못 검출됐을 때 유사도
+  게이트가 두 번째 안전망 역할을 함. 실제 효과는 통합 단계에서 측정 필요.
+
+### 다음 단계
+
+- `poc/action-runner` 시작: `TriggerEvent` 받아 macOS 액션(앱 실행, URL, osascript,
+  shortcuts run) 의 실제 지연 측정. 300 ms 이내 목표.
+- 후속 패치 백로그 그대로 유지: audio-capture SIGINT 핸들러.
