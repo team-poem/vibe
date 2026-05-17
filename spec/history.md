@@ -284,3 +284,58 @@ pub fn match_pattern(events: &[ClapEvent], config: &MatcherConfig) -> Vec<Trigge
 - `poc/action-runner` 시작: `TriggerEvent` 받아 macOS 액션(앱 실행, URL, osascript,
   shortcuts run) 의 실제 지연 측정. 300 ms 이내 목표.
 - 후속 패치 백로그 그대로 유지: audio-capture SIGINT 핸들러.
+
+## 2026-05-17 (PRD 정제)
+
+### 목적
+
+`poc/action-runner` 진행 중 사용자가 PoC 의 액션 종류 4종(앱 실행, URL, osascript,
+shortcut) 이 본인이 원하는 제품 형태와 맞는지 의문을 제기. PRD 7.4 의 액션 예시
+8종이 모두 진짜 필요한 것은 아니라는 인식이 잡혀, 본격 구현 전에 PRD 자체를 사용자
+의도에 맞게 좁히기로 함.
+
+### 사용자 확인된 최종 흐름
+
+1. 최초 설치 시 마이크 권한 + "Mac 시작 시 자동 실행" 토글 한 번만 설정.
+2. 그 다음부터는 **Mac 켜기 → 박수 두 번** 두 단계로 활성 루틴 실행.
+3. V.I.B.E 자체에 사용자 계정 / 로그인 / 회원가입 없음. 완전 로컬, 외부 통신 X.
+4. 액션은 **앱 실행** 과 **URL 열기** 두 종만 사용. 나머지는 차후 확장.
+5. 여러 루틴 보유 가능. 한 번에 하나만 "활성 루틴" 으로 박수에 반응. 활성 루틴
+   전환은 메뉴바 메뉴에서 수행.
+
+### PRD 수정 사항
+
+- **7.4 액션 및 루틴 시스템:** 액션 예시 8종 → "MVP 2종 (앱 실행, URL 열기)" +
+  "확장 후보 6종" 으로 재구성. 루틴 실행은 MVP 에서 순차로 고정 (지연/병렬은 확장).
+  활성 루틴 단일 + 메뉴바 전환 정책 명시.
+- **10. 보안 및 권한:** "V.I.B.E 자체에는 사용자 계정 / 로그인 / 회원가입이 없다"
+  를 첫 항목으로 명시. 모든 사용자 데이터는 로컬 파일에만 저장.
+- **11. MVP 범위:** "Shell Script 또는 Shortcuts 실행 액션" 줄 제거. "활성 루틴
+  전환 (메뉴바)" 항목 추가. 하단에 "Mac 켜기 → 박수 두 번" 흐름을 우선한다는
+  요약 박스 추가.
+- **12. 상세 작업 리스트:** Action Runner 를 "앱 실행, URL 열기 (MVP 2종)" 으로
+  좁힘. "Active Routine Switcher" 작업 항목 추가.
+
+### PoC 영향
+
+- `poc/action-runner` 의 측정 대상: 4종(osascript/open-app/open-url/shortcut)
+  → **2종 (open-app, open-url)** 으로 좁힘.
+- osascript 와 shortcut 은 코드 경로(`Action` enum) 와 단위 테스트로 검증된 상태
+  유지하되, 실제 측정값 수집 대상에서 제외. 본 통합 단계에서 빠질 수도 있고, 향후
+  확장 단계에서 다시 들어올 수도 있음.
+- 측정 결과 자체는 5단계에서 이미 수집됨 (open-app dispatch p95=158 ms, open-url
+  p95=134 ms — PRD 의 300 ms 목표 절반 수준).
+
+### 결정 사항
+
+- PRD 의 **3. 목표** 와 **6. 사용자 시나리오** 는 손대지 않음. 비전 / 흐름은 그대로.
+  좁힌 것은 액션 종류와 MVP 범위뿐.
+- 확장 단계 액션(Shell Script, AppleScript, Shortcuts, 음악 제어, 볼륨 등) 은
+  PRD 에 "확장 후보" 로 박제. 미래에 들어올 수도 있고 안 들어올 수도 있음.
+
+### 다음 단계
+
+- `poc/action-runner` 의 POC.md 작성 시 MVP 2종에 초점. 5단계에서 측정한 osascript
+  결과는 "확장 후보 참고용" 으로 부록 처리.
+- `poc/action-runner` 마무리 후 `poc/tauri-shell` 진행. 메뉴바 상주 + Login Items
+  자동 실행 + 권한 다이얼로그 검증. 활성 루틴 전환 UI 는 본 통합 단계 책임.
