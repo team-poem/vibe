@@ -339,3 +339,94 @@ shortcut) 이 본인이 원하는 제품 형태와 맞는지 의문을 제기. P
   결과는 "확장 후보 참고용" 으로 부록 처리.
 - `poc/action-runner` 마무리 후 `poc/tauri-shell` 진행. 메뉴바 상주 + Login Items
   자동 실행 + 권한 다이얼로그 검증. 활성 루틴 전환 UI 는 본 통합 단계 책임.
+
+## 2026-05-17 (poc/action-runner)
+
+### 목적
+
+`poc/double-clap` 의 `TriggerEvent` 를 받아 macOS 액션을 실제 subprocess 로 실행
+했을 때 PRD 의 "박수 감지 후 첫 액션까지 300 ms" 목표를 깰 가능성이 있는지
+확인. 사용자가 단계별로 차근차근 진행하길 원해 PoC 한 덩어리를 8단계로 끊고,
+매 단계 시작 전에 "뭘 + 왜" 한 문단으로 공시하는 방식으로 진행.
+
+### 결정 사항
+
+- **타입 설계 (2단계) 에서 spawn vs dispatch 분리:** PRD 는 "300 ms 이내" 만 명시
+  하지만 측정 시점이 두 개 — `Command::spawn` 반환 시점(fork 비용) vs subprocess
+  종료 시점(LaunchServices 위임 완료). 둘 다 측정해 사용자 체감 지연의 진짜
+  주체가 무엇인지 분리.
+- **subprocess 동기 모델 유지:** `fn run(&Action) -> Result<ActionResult, RunError>`
+  은 호출 스레드에서 `wait()` 까지 블로킹. 본 통합에선 트리거 감지 스레드가 직접
+  호출하지 않고 메시지 큐로 액션 워커에 위임 (`spec/code/rust/concurrency.md` 의
+  "real-time callbacks only do the minimum" 원칙 그대로).
+- **반복 측정 분포 압축:** N=5 측정값을 min/p50/p95/max 로 압축. warmup=1 로 첫
+  fork/exec 캐시 cold 비용 흡수. PoC 단계 규모에 충분.
+- **PRD 정제 (별도 섹션 참조):** PoC 진행 도중 사용자가 4종 액션 측정의 정당성에
+  의문 제기 → PRD 7.4 / 10 / 11 / 12 를 사용자 의도 (앱 + URL 만 사용, 로컬 전용,
+  로그인 없음) 에 맞게 좁힘. PoC 의 측정 대상도 MVP 2종에 좁힘.
+- **코드는 4종 그대로 유지:** `Action` enum 의 `Osascript` / `Shortcut` 도 단위
+  테스트 + parse + Display 까지 모두 구현 상태로 둠. 확장 단계에 다시 켤 때
+  코드 작성 비용 0. 측정만 MVP 에 집중.
+
+### 진행 단계 (8개로 쪼갬)
+
+1. `main` 에서 `poc/action-runner` 분기 + cargo init binary crate (anyhow, thiserror).
+2. 타입 설계 — `Action` enum 4종, `ActionResult`, `RunError` (Spawn / Wait 분리).
+   `program()` / `args()` / `kind_label()` 헬퍼로 subprocess 호출 형태 명세.
+3. `fn run` 본체 구현 — `Command::spawn` + `child.wait()` 사이 시각 기록. open-app
+   Calculator 로 1회 검증 (spawn 2.37 ms, dispatch 61.78 ms).
+4. 3종 액션 (osascript, open-app, open-url) 직렬 실행 — 인터페이스 동일성 확인.
+   open-url 호출 시 사용자가 example.com 탭이 실제로 뜬 걸 확인 (의도된 동작).
+5. 반복 측정 + 분포 — `Distribution` (min / p50 / p95 / max), `Stats`,
+   `measure(action, repetitions, warmup)`. warmup=1, reps=5 로 첫 측정값 수집.
+6. CLI 인자 처리 — `Action::parse(kind, param)` 추가, 0 / 2 인자 분기, usage 출력.
+7. fmt / clippy / test 통과 확인 (단위 테스트 10개).
+8. POC.md + 커밋 + history 기록.
+
+### 측정 결과
+
+| 액션 | spawn p50 / p95 (ms) | dispatch p50 / p95 (ms) | dispatch max (ms) |
+|---|---|---|---|
+| open-app (Calculator) | 0.45 / 1.33 | 45.97 / 157.56 | 157.56 |
+| open-url (example.com) | 1.66 / 3.52 | 99.27 / 133.62 | 133.62 |
+| osascript (참고 baseline) | 0.45 / 0.56 | 30.79 / 32.22 | 32.22 |
+
+**PRD 300 ms 목표 검증:** MVP 2종 모두 dispatch p95 < 160 ms — 목표의 절반.
+액션 실행부가 PRD 의 반응 속도 목표를 깰 리스크는 거의 없음. 병목은 마이크 → 박수
+감지 → 매처 경로 쪽으로 좁혀짐.
+
+### 인터페이스 계약 (다음 PoC `poc/tauri-shell` 로 이어짐)
+
+```rust
+pub enum Action {
+    OpenApp { name: String },
+    OpenUrl { url: String },
+    Osascript { script: String },     // 확장 후보, 측정 baseline
+    Shortcut { name: String },        // 확장 후보, 미측정
+}
+
+pub fn run(action: &Action) -> Result<ActionResult, RunError>
+```
+
+`tauri-shell` 은 트레이 / Login Items / 권한 다이얼로그가 책임. `run` 자체는
+변경할 일 없고 본 통합 시 호출만 한다.
+
+### 발견 사항
+
+- **dispatch 시간이 spawn 시간보다 30~150 배 큼.** 액션 종류와 무관하게 fork / exec
+  자체는 0.5~2 ms 수준. 진짜 비용은 LaunchServices (open-app), 브라우저 IPC
+  (open-url), 스크립트 인터프리터 (osascript). 본 통합에서 액션 지연을 줄이려면
+  spawn 최적화보다 시스템 컴포넌트 워밍업이 더 효과적.
+- **open-app max=157 ms 의 cold variance.** warmup=1 이 다 흡수 못 함. Mac 부팅 후
+  첫 박수 트리거는 평소보다 느릴 수 있음. 사용자 체감 차이는 크지 않을 가능성.
+- **subprocess stdio inherit.** osascript 의 `return 1` 결과가 부모 stdout 으로
+  새어나옴 (`1` 이 측정 표 사이에 끼임). 측정값에는 영향 없음. 본 통합에서
+  `.stdout(Stdio::null())` 로 정리.
+
+### 다음 단계
+
+- `poc/tauri-shell` 시작: 마지막 PoC. 메뉴바 상주, Login Items 자동 실행, 마이크
+  권한 다이얼로그. Tauri 빈 앱부터 시작해 트레이 아이콘 + 자동 실행까지.
+- 본 통합 전 정리할 부수 패치 (그대로):
+  - `poc/audio-capture` 의 SIGINT 핸들러 (wav writer finalize).
+  - 본 통합 시 액션 실행기에 `.stdout(Stdio::null())` 적용.
