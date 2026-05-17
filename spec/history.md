@@ -430,3 +430,116 @@ pub fn run(action: &Action) -> Result<ActionResult, RunError>
 - 본 통합 전 정리할 부수 패치 (그대로):
   - `poc/audio-capture` 의 SIGINT 핸들러 (wav writer finalize).
   - 본 통합 시 액션 실행기에 `.stdout(Stdio::null())` 적용.
+
+## 2026-05-18 (poc/tauri-shell)
+
+### 목적
+
+V.I.B.E 의 마지막 PoC. 사용자가 원하는 "Mac 켜기 → 박수 두 번" 흐름의 선결
+조건인 **메뉴바 상주 + Login Items 자동 실행 + 마이크 권한 다이얼로그** 셋을
+한 자리에 검증. 이전 PoC 들과 달리 Tauri 2 + React/TS 기반 데스크톱 앱이라
+의존성과 빌드 파이프라인이 무거워서 단계를 8개로 잘게 쪼개 진행.
+
+### 결정 사항
+
+- **Tauri 2.x:** 1.x 가 deprecated 되는 시점이라 처음부터 2 로 시작. 트레이 /
+  Login Items / 권한 모두 2 의 기본 API + 공식 플러그인으로 커버 가능.
+- **패키지 매니저 pnpm 으로 전환:** 1단계 시작 직후 사용자가 pnpm 선호 명시.
+  메모리 (`feedback_pnpm_default.md`) 에 기록. 이후 모든 npm 명령 → pnpm.
+  esbuild postinstall 차단 이슈는 `pnpm approve-builds --all` 한 번으로 해결,
+  결과가 `pnpm-workspace.yaml` 에 영구 저장됨.
+- **Dock 아이콘 없이 메뉴바 전용:** `ActivationPolicy::Accessory` + `LSUIElement`
+  Info.plist 키 둘 다 적용. PRD 7.2 의 "기본적으로 백그라운드 또는 메뉴바 상태로
+  시작" 충족.
+- **윈도우는 숨김 시작 + 닫기 무력화:** `tauri.conf.json` 에 `visible: false`,
+  `prevent_close` 핸들러로 X 눌러도 hide 만. 메뉴바 트레이가 진짜 라이프사이클
+  주체.
+- **마이크 권한은 "Test microphone" 메뉴로 명시 호출:** 앱 시작 시 자동 호출하면
+  dev 핫리로드마다 다이얼로그가 폭주. 사용자가 메뉴 클릭해야 cpal 이 권한 요청
+  하는 방식으로.
+- **단위 테스트 0 개:** Tauri shell 은 시스템 통합 위주라 단위 테스트로 검증할
+  표면이 거의 없음. CI 통합 시점에 E2E 스모크가 더 의미 있다고 판단.
+
+### 진행 단계 (8 개로 쪼갬)
+
+1. `main` 에서 `poc/tauri-shell` 분기 + `pnpm create tauri-app` 으로 React+TS
+   템플릿 스캐폴드 + 저장소 루트로 복사 (`main` 의 README 유지).
+2. 메뉴바 트레이 아이콘 + 윈도우 hidden + Accessory 정책 적용. `tray-icon`,
+   `image-png` feature 추가.
+3. 트레이 메뉴 4 항목 (Show / Detection(check) / 구분선 / Quit) + `CheckMenuItem`
+   토글 패턴 + 상태 `Mutex<bool>` 보관.
+4. `tauri-plugin-autostart` 추가 → 메뉴에 "Auto-start on login" 체크 항목. 사용자가
+   시스템 설정 → 로그인 항목에서 등록 확인.
+5. `cpal = "0.15"` + `src-tauri/Info.plist` (NSMicrophoneUsageDescription +
+   LSUIElement) → "Test microphone" 메뉴 클릭 시 cpal 이 build_input_stream 호출
+   → macOS TCC 다이얼로그 표시 → 사용자가 Allow 클릭 → `MacBook Air 마이크` 잡힘.
+6. `AppStatus` enum (Waiting / DetectionPaused / MicPermissionMissing) + 메뉴 맨
+   위 비활성 라벨 + Detection 토글에 따라 라벨 자동 갱신.
+7. `cargo fmt --check` / `clippy -- -D warnings` / `cargo test` 통과 (`let _ =`
+   1 곳 정리). `pnpm tauri build --debug` 로 .app 25 MB + DMG 생성. 생성된 .app
+   의 Info.plist 에 우리 키 (`NSMicrophoneUsageDescription`, `LSUIElement`) 박힘
+   확인.
+8. POC.md + 커밋 + history 기록.
+
+### 검증 결과
+
+| 항목 | 결과 |
+|---|---|
+| 첫 실행 시 메인 윈도우 숨김 + 메뉴바 V 아이콘 등장 | ✓ |
+| Dock 아이콘 안 뜸 (Accessory) | ✓ |
+| 트레이 메뉴 8 항목 동작 | ✓ |
+| Detection 토글 시 상태 라벨 갱신 | ✓ |
+| Auto-start 토글 시 시스템 설정 로그인 항목에 등록 | ✓ |
+| Test microphone 클릭 시 macOS TCC 다이얼로그 표시 | ✓ |
+| Allow 후 cpal 이 MacBook Air 마이크 잡음 | ✓ |
+| Show settings → 윈도우 X 닫기 → 앱 살아있음 | ✓ |
+| Quit 시 정상 종료 | ✓ |
+| fmt / clippy / test | ✓ |
+| `pnpm tauri build --debug` 가 .app + DMG 생성 | ✓ |
+
+### 인터페이스 계약 (본 통합으로 이어짐)
+
+이번 PoC 는 "다른 PoC 들이 통합될 셸". 본 통합 시:
+
+| 통합 대상 | 호출 위치 | 인터페이스 |
+|---|---|---|
+| `poc/audio-capture` | 별도 스레드, `setup` 내 spawn | `fn on_samples(samples, sample_rate)` |
+| `poc/clap-detector` | 위 스레드 콜백 | `fn detect(samples, sample_rate) -> Vec<ClapEvent>` |
+| `poc/double-clap` | clap-detector 출력 | `fn match_pattern(events, config) -> Vec<TriggerEvent>` |
+| `poc/action-runner` | 액션 워커 스레드 | `fn run(action) -> Result<ActionResult, RunError>` |
+
+마이크 콜백 → 박수 이벤트 → 트리거 → 액션 워커, 각 단계 사이는 채널 (`mpsc`)
+로 끊음.
+
+### 발견 사항
+
+- **dev 모드에서도 권한 다이얼로그가 떴다.** Tauri 2 의 build script 가 dev
+  binary 에도 일부 Info.plist 를 embed 하는 것으로 추정. 다른 환경 (다른 macOS,
+  다른 사용자 권한 상태) 에서는 dev 가 다이얼로그 못 띄울 가능성 있어 본 통합
+  단계에서는 .app 으로 재검증 권장.
+- **pnpm 11 의 strict postinstall.** esbuild 가 막혀서 `pnpm install` 이 exit 1.
+  `pnpm approve-builds --all` 한 번이면 `pnpm-workspace.yaml` 에 영구 저장되고
+  이후 클린.
+- **Info.plist 머지 자동.** `src-tauri/Info.plist` 를 파일로 두면 Tauri 가
+  `tauri.conf.json` 의 자동 생성 Info.plist 와 머지해 최종 .app 의 Info.plist 에
+  사용자 키가 들어감. 추가 설정 불필요.
+- **Login Items 등록은 서명 없이도 등록 자체는 됨.** 실제 reboot 후 자동 실행
+  여부는 unsigned 빌드에서 보장 안 됨. 본 통합 단계에서 서명 .app + /Applications/
+  설치로 재검증 필요.
+
+### 다음 단계
+
+- **PoC 5 개 모두 완료.** 본 프로젝트 단계 진입.
+- 본 통합 (`main` 의 새 디렉토리 구조에 PoC 코드를 손으로 옮김) 순서 제안:
+  1. `poc/tauri-shell` 을 베이스로 본 프로젝트 셸을 시작.
+  2. `poc/audio-capture` → `poc/clap-detector` → `poc/double-clap` 을 백엔드
+     스레드로 옮김 (mpsc 채널 + tokio 또는 std::thread 결정).
+  3. `poc/action-runner` 를 액션 워커 스레드로 옮김.
+  4. 프런트엔드 React 페이지에 루틴 편집기 (Routine Editor) + 활성 루틴 전환
+     UI 추가.
+- 누적된 부수 패치 백로그:
+  - `poc/audio-capture` 의 SIGINT 핸들러 (wav writer finalize).
+  - 본 통합 시 액션 실행기에 `.stdout(Stdio::null())` 적용.
+  - Tauri 셸에 코드 서명 + /Applications/ 설치 후 reboot 자동 실행 재검증.
+- 브랜치 전략 전환: PoC 단계는 끝. 이제 `main` → `dev` → `feat/*` 모델로 운영
+  (memory `project_branching_strategy.md` 의 본격 단계 정책 적용).
