@@ -543,3 +543,90 @@ V.I.B.E 의 마지막 PoC. 사용자가 원하는 "Mac 켜기 → 박수 두 번
   - Tauri 셸에 코드 서명 + /Applications/ 설치 후 reboot 자동 실행 재검증.
 - 브랜치 전략 전환: PoC 단계는 끝. 이제 `main` → `dev` → `feat/*` 모델로 운영
   (memory `project_branching_strategy.md` 의 본격 단계 정책 적용).
+
+## 2026-07-03 (본 통합 시작: feat/app-shell + feat/audio-engine)
+
+### 목적
+
+PoC 5개 완료 후 본 제품 통합 시작. `main` → `dev` 분기 후 기능 단위 `feat/*`
+브랜치로 작업하고 완성되면 `dev` 에 머지하는 모델로 전환. 첫 두 feat 로
+(1) tauri-shell PoC 를 제품 토대로 포팅, (2) 가장 큰 미지수였던 **라이브
+스트리밍 박수 감지** 를 구현·검증.
+
+### 결정 사항
+
+- **PoC 브랜치는 박제 유지.** 머지하지 않고 인터페이스 계약을 보고 제품 코드를
+  손으로 새로 작성. `git checkout poc/<branch> -- <paths>` 로 파일 단위 선별 포팅.
+- **`feat/app-shell`:** tauri-shell 의 앱 스캐폴드만 포팅 (문서 제외). 크레이트/
+  productName/identifier 를 `vibe` / `V.I.B.E` / `com.vibe.app` 으로 정리.
+- **`ClapEvent` 단일 정의로 통합:** PoC 에서 clap-detector 와 double-clap 이
+  의도적으로 중복 정의했던 구조체를 `engine/event.rs` 하나로 합침.
+- **detector 를 배치 → 스트리밍으로 재작성:** PoC 의 `detect()` 는 wav 한 덩어리
+  입력의 순수 함수라 실시간 마이크 콜백(조각 입력)에 그대로 못 씀.
+  `StreamingDetector` 가 노이즈 플로어(EMA)·불응기·decay 대기 후보를 호출 사이에
+  유지. **조기 확정** 방식: decay 윈도우 끝까지 기다리지 않고 20 dB 하락을
+  처음 관측한 프레임에서 즉시 이벤트 확정 → 박수 후 최대 ~60 ms 안에 발화.
+- **matcher 는 순수 로직 + 스테이트풀 래퍼:** `evaluate_pair` (순수) 위에
+  미소비 박수 1개만 보관하는 `StreamingMatcher`. 기각 페어는 한 칸 전진(배치와
+  동일 의미론). PoC 의 디버깅용 `analyze` API 는 제품에서 제외.
+- **스레드 구성 (concurrency 스펙 적용):** 오디오 스레드(cpal 스트림 소유,
+  콜백은 다운믹스+`try_send` 만) → 감지 스레드(detector+matcher) → 이벤트 워커
+  (액션 실행이 감지를 블로킹하지 못하게 분리). 채널은 bounded(64) `sync_channel`,
+  cpal `Stream` 이 `!Send` 라 오디오 스레드가 스트림을 소유하고 stop 플래그로 종료.
+- **하드코딩 루틴으로 수직 검증:** 루틴 스토어 전에 "박수 2번 → 계산기 실행" 을
+  `lib.rs` 에 박아 파이프라인 전체를 실기기로 먼저 검증. `open` 호출에 백로그였던
+  `Stdio::null()` 적용.
+- **Detection 토글 연결:** 트레이 메뉴의 Detection 체크가 엔진 `AtomicBool` 로
+  연결. 일시정지 → 재개 시 `matcher.reset()` 으로 정지 전 박수와 재개 후 박수가
+  짝지어지는 것 방지.
+
+### 진행 단계
+
+1. `main` → `dev` 분기 + push. `dev` → `feat/app-shell` 분기.
+2. tauri-shell 앱 파일 선별 포팅 + 네이밍 정리 + fmt/clippy 통과 → dev 머지.
+3. `dev` → `feat/audio-engine` 분기. `engine/` (event, floor, features, detector,
+   matcher) + `audio.rs` + `pipeline.rs` 작성, `lib.rs` 배선.
+4. 단위 테스트 23개 + wav 회귀 테스트 3개. 회귀용 `claps_short.wav` 는
+   poc/clap-detector 브랜치에서 추출 (`.gitignore` 에 예외 추가).
+5. `pnpm tauri dev` 로 라이브 검증: 실제 박수 2번 → `[trigger]` 로그 + 계산기 실행.
+6. fmt / clippy `-D warnings` / test 전부 통과 후 커밋.
+
+### 측정 결과
+
+- **라이브 트리거 성공 2회:** interval=320 ms, confidence 0.55 / 0.60. 두 번 모두
+  계산기 실행. 위양성 관측 0. 장치는 MacBook Air 마이크 44.1 kHz (PoC 는 48 kHz
+  였는데 detector 가 sample rate 기준으로 프레임 크기를 잡아 자동 대응).
+- **청크 크기 불변성:** 같은 wav 를 512 / 479 / 4096 샘플 청크로 흘려도 검출
+  timestamp 완전 동일 → 스트리밍 재작성이 배치 의미론을 보존함을 회귀로 고정.
+- 테스트 26개 통과 (단위 23 + 회귀 3).
+
+### 발견 사항
+
+- **PoC 테스트 헬퍼 `pseudo_noise` 는 사실상 DC 신호.** `(x >> 8) / u32::MAX`
+  가 [0, 1/256) 범위라 결과가 -1 근처 상수. PoC 에선 음성 테스트에만 써서 무해
+  했지만, 양성 테스트(광대역 버스트)에 쓰면 flatness 게이트에서 기각됨. 양성
+  테스트용으로 스테이트풀 LCG 기반 `white_noise` 헬퍼를 따로 만들어 해결.
+- 스트리밍 조기 확정의 confidence 는 배치보다 약간 낮게 나올 수 있음 (배치는
+  윈도우 내 최소 dB 로 drop 을 계산, 스트리밍은 임계 통과 시점의 drop 사용).
+  matcher 의 base 점수에만 쓰여 실사용 영향 없음.
+
+### 인터페이스 계약 (다음 feat 로 이어짐)
+
+```rust
+// pipeline.rs — 다음 feat/action-runner 는 이 콜백 안의
+// run_hardcoded_routine() 을 액션 실행기로 교체한다.
+pub enum EngineEvent {
+    Trigger(TriggerEvent),
+    CaptureFailed(String),
+}
+pub fn start(on_event: impl Fn(EngineEvent) + Send + 'static) -> Engine
+```
+
+콜백은 이벤트 워커 스레드에서 실행되므로 액션 실행이 블로킹해도 감지에 영향 없음.
+
+### 다음 단계
+
+- `feat/action-runner`: PoC 의 `Action` enum (MVP 2종: OpenApp / OpenUrl) +
+  `run()` 포팅, 측정용 `measure`/`Distribution` 은 제외. 하드코딩 루틴 교체.
+- `feat/routine-store`: Routine 모델 + JSON 영속화 + Tauri 커맨드.
+- 남은 백로그: 코드 서명 + /Applications/ 설치 후 reboot 자동 실행 재검증.
