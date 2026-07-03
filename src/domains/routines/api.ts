@@ -23,3 +23,11 @@ export async function setActiveRoutineInStore(
 ): Promise<RoutineConfig> {
   return invoke<RoutineConfig>("set_active_routine", { id });
 }
+
+/// With `prompt`, macOS shows the Accessibility permission dialog and adds
+/// the app to the System Settings list.
+export async function checkAccessibilityPermission(
+  prompt: boolean,
+): Promise<boolean> {
+  return invoke<boolean>("check_accessibility_permission", { prompt });
+}

@@ -1,34 +1,59 @@
+mod execute;
 mod runner;
 
+pub use execute::run_routine;
 pub use runner::{run, ActionResult, RunError};
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// A single macOS action a routine can execute. MVP supports launching an
-/// app and opening a URL; further kinds live in the `poc/action-runner`
-/// branch until they are promoted.
+use crate::layout::Region;
+
+/// A single macOS action a routine can execute, optionally snapped to a
+/// screen region after it opens. MVP supports launching an app and opening
+/// a URL; further kinds live in the `poc/action-runner` branch until they
+/// are promoted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Action {
-    OpenApp { name: String },
-    OpenUrl { url: String },
+    OpenApp {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<Region>,
+    },
+    OpenUrl {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<Region>,
+    },
 }
 
 impl Action {
     pub fn open_app(name: impl Into<String>) -> Self {
-        Self::OpenApp { name: name.into() }
+        Self::OpenApp {
+            name: name.into(),
+            region: None,
+        }
     }
 
     pub fn open_url(url: impl Into<String>) -> Self {
-        Self::OpenUrl { url: url.into() }
+        Self::OpenUrl {
+            url: url.into(),
+            region: None,
+        }
     }
 
     pub fn kind_label(&self) -> &'static str {
         match self {
             Self::OpenApp { .. } => "open-app",
             Self::OpenUrl { .. } => "open-url",
+        }
+    }
+
+    pub fn region(&self) -> Option<Region> {
+        match self {
+            Self::OpenApp { region, .. } | Self::OpenUrl { region, .. } => *region,
         }
     }
 
@@ -40,8 +65,8 @@ impl Action {
 
     pub(crate) fn args(&self) -> Vec<&str> {
         match self {
-            Self::OpenApp { name } => vec!["-a", name.as_str()],
-            Self::OpenUrl { url } => vec![url.as_str()],
+            Self::OpenApp { name, .. } => vec!["-a", name.as_str()],
+            Self::OpenUrl { url, .. } => vec![url.as_str()],
         }
     }
 }
@@ -49,8 +74,8 @@ impl Action {
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::OpenApp { name } => write!(f, "open-app({name})"),
-            Self::OpenUrl { url } => write!(f, "open-url({url})"),
+            Self::OpenApp { name, .. } => write!(f, "open-app({name})"),
+            Self::OpenUrl { url, .. } => write!(f, "open-url({url})"),
         }
     }
 }

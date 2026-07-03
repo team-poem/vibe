@@ -1,7 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { actionValue, buildAction } from "../types";
-import type { Action, ActionKind, Routine } from "../types";
+import { checkAccessibilityPermission } from "../api";
+import {
+  clampActionsToPreset,
+  derivePreset,
+  hasAnyRegion,
+  PRESET_LABELS,
+  PRESET_REGIONS,
+  REGION_LABELS,
+  selectableRegions,
+} from "../layout";
+import type { LayoutPreset } from "../layout";
+import { actionLabel, actionValue, buildAction } from "../types";
+import type { Action, ActionKind, Region, Routine } from "../types";
 
 type ValidationResult = { ok: true } | { ok: false; reason: string };
 
@@ -43,6 +54,9 @@ export const RoutineEditor = ({
   onActivate,
 }: RoutineEditorProps) => {
   const [draft, setDraft] = useState<Routine>(routine);
+  const [preset, setPreset] = useState<LayoutPreset>(() =>
+    derivePreset(routine.actions),
+  );
   const [validationError, setValidationError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -50,6 +64,11 @@ export const RoutineEditor = ({
 
   const updateActions = (actions: Action[]) => {
     setDraft({ ...draft, actions });
+  };
+
+  const handlePresetChange = (next: LayoutPreset) => {
+    setPreset(next);
+    setDraft({ ...draft, actions: clampActionsToPreset(draft.actions, next) });
   };
 
   async function handleSave() {
@@ -81,6 +100,27 @@ export const RoutineEditor = ({
         <ActiveToggle isActive={isActive} onToggle={handleActivateToggle} />
       </div>
 
+      <h2 className="editorSectionTitle">Layout</h2>
+      <p className="editorHint">
+        Pick a split, then assign each action to a screen region.
+      </p>
+      <div className="layoutSection">
+        <div className="presetGroup" role="group" aria-label="Layout preset">
+          {(Object.keys(PRESET_REGIONS) as LayoutPreset[]).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={option === preset ? "presetButton on" : "presetButton"}
+              onClick={() => handlePresetChange(option)}
+            >
+              {PRESET_LABELS[option]}
+            </button>
+          ))}
+        </div>
+        <MonitorMockup preset={preset} actions={draft.actions} />
+      </div>
+      <PlacementPermissionHint needed={hasAnyRegion(draft.actions)} />
+
       <h2 className="editorSectionTitle">Actions</h2>
       <p className="editorHint">Run in order when you clap twice.</p>
 
@@ -91,6 +131,7 @@ export const RoutineEditor = ({
             action={action}
             index={index}
             total={draft.actions.length}
+            regionOptions={selectableRegions(preset)}
             onChange={(next) =>
               updateActions(draft.actions.map((a, i) => (i === index ? next : a)))
             }
@@ -169,6 +210,91 @@ const ActiveToggle = ({
   );
 };
 
+interface MonitorMockupProps {
+  preset: LayoutPreset;
+  actions: Action[];
+}
+
+/// Miniature display, like the monitor in macOS display settings, showing
+/// which action lands in which region of the chosen split.
+const MonitorMockup = ({ preset, actions }: MonitorMockupProps) => {
+  const fullScreenActions = actions.filter((a) => a.region === "full");
+
+  return (
+    <div className="monitor">
+      <div className={`monitorScreen preset-${preset}`}>
+        {PRESET_REGIONS[preset].map((region) => {
+          const assigned = actions.filter((a) => a.region === region);
+          const className =
+            assigned.length > 0 ? "monitorCell filled" : "monitorCell";
+          return (
+            <div key={region} className={className}>
+              {assigned.length > 0 ? (
+                assigned.map((action, i) => (
+                  <span key={i} className="monitorCellApp">
+                    {actionLabel(action)}
+                  </span>
+                ))
+              ) : (
+                <span className="monitorCellHint">{REGION_LABELS[region]}</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="monitorStand" />
+      {fullScreenActions.length > 0 && (
+        <p className="monitorFullNote">
+          Full screen: {fullScreenActions.map(actionLabel).join(", ")}
+        </p>
+      )}
+    </div>
+  );
+};
+
+/// Shown only when regions are assigned but macOS has not granted the
+/// Accessibility permission yet.
+const PlacementPermissionHint = ({ needed }: { needed: boolean }) => {
+  const [granted, setGranted] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!needed) {
+      return;
+    }
+    let cancelled = false;
+    async function checkQuietly() {
+      const ok = await checkAccessibilityPermission(false);
+      if (!cancelled) {
+        setGranted(ok);
+      }
+    }
+    void checkQuietly();
+    return () => {
+      cancelled = true;
+    };
+  }, [needed]);
+
+  if (!needed || granted !== false) {
+    return null;
+  }
+
+  async function handleEnableClick() {
+    setGranted(await checkAccessibilityPermission(true));
+  }
+
+  return (
+    <div className="permissionHint">
+      <span>
+        Window placement needs the Accessibility permission — enable V.I.B.E in
+        System Settings.
+      </span>
+      <button type="button" className="ghostButton" onClick={handleEnableClick}>
+        Enable…
+      </button>
+    </div>
+  );
+};
+
 const ACTION_KIND_LABELS: Record<ActionKind, string> = {
   "open-app": "Launch app",
   "open-url": "Open URL",
@@ -183,6 +309,7 @@ interface ActionRowProps {
   action: Action;
   index: number;
   total: number;
+  regionOptions: Region[];
   onChange: (action: Action) => void;
   onMove: (direction: -1 | 1) => void;
   onRemove: () => void;
@@ -192,6 +319,7 @@ const ActionRow = ({
   action,
   index,
   total,
+  regionOptions,
   onChange,
   onMove,
   onRemove,
@@ -220,8 +348,30 @@ const ActionRow = ({
         value={actionValue(action)}
         placeholder={ACTION_PLACEHOLDERS[action.type]}
         aria-label="Action value"
-        onChange={(event) => onChange(buildAction(action.type, event.target.value))}
+        onChange={(event) =>
+          onChange(
+            buildAction(action.type, event.target.value, action.region ?? null),
+          )
+        }
       />
+      <select
+        className="actionRegionSelect"
+        value={action.region ?? ""}
+        aria-label="Screen region"
+        onChange={(event) =>
+          onChange({
+            ...action,
+            region: (event.target.value || null) as Region | null,
+          })
+        }
+      >
+        <option value="">No placement</option>
+        {regionOptions.map((region) => (
+          <option key={region} value={region}>
+            {REGION_LABELS[region]}
+          </option>
+        ))}
+      </select>
       <div className="actionRowControls">
         <button
           type="button"

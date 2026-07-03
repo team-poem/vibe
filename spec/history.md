@@ -847,3 +847,63 @@ type Action = { type: "open-app"; name: string } | { type: "open-url"; url: stri
 - `feat/window-layout`: `Action` 에 `region: Option<Region>` 추가 + AX 배치
   모듈 통합 + 편집기에 모니터 목업 레이아웃 UI.
 - 기존 잔여: `feat/menu-switcher`, `feat/exec-log`, 감도 설정, 코드 서명 검증.
+
+## 2026-07-03 (feat/window-layout)
+
+### 목적
+
+PoC 로 검증한 창 배치를 제품에 통합. 루틴의 각 액션에 화면 영역을 지정하면
+박수 트리거 시 앱/URL 창이 지정 영역에 자동 스냅되는 기능. PRD 7.4 에 화면
+배치 섹션을 먼저 추가하고 구현.
+
+### 결정 사항
+
+- **모델:** `Action` 양 variant 에 `region: Option<Region>` 추가.
+  `skip_serializing_if` 로 기존 JSON 과 완전 호환 (region 없는 문서 그대로
+  로드됨). `Region` 은 kebab-case serde (`"left-half"` 등) 로 프런트와 공유.
+- **2단계 루틴 실행 (`action/execute.rs`):** 1단계에서 모든 액션을 즉시
+  실행(빠른 spawn), 2단계에서 창 대기+배치. 느린 창 대기가 뒤 액션의 실행을
+  지연시키지 않아 PRD "1초 내 체감 시작" 유지. 단, 영역 지정 URL 은 새
+  브라우저 창을 직접 만들어야 하므로(일반 `open` 은 탭으로 흡수) 2단계로 전부
+  이연.
+- **PoC 발견사항 3개 모두 반영:** (1) 새 창 식별은 열기 전 스냅샷과의 CFEqual
+  diff (`same_element`), (2) 실행 중 Chrome 에는 바이너리 직접 호출로 새 창
+  생성, (3) 크기 고정 창은 `Placement::MovedOnly` 관용.
+- **권한 처리:** 배치 시점에 `AXIsProcessTrusted` (프롬프트 없이) 확인, 미승인
+  시 배치만 건너뛰고 열기는 정상 진행 (PRD 정책). 편집기에는 영역이 배정돼
+  있고 권한이 없을 때만 힌트 배너 + "Enable…" 버튼 (프롬프트 호출 →
+  설정 목록 자동 등록) 노출. `check_accessibility_permission(prompt)` 커맨드.
+- **레이아웃 프리셋은 UI 개념:** 저장되는 건 액션별 region 뿐. 편집기의
+  2/3/4 split 프리셋은 영역 선택지를 좁히고 모니터 목업 그리드를 결정하며,
+  기존 region 에서 역산(derivePreset). 프리셋 전환 시 무효 region 은 해제.
+- **모니터 목업:** 디스플레이 설정 느낌의 미니 모니터 (16:10, 베젤+스탠드).
+  프리셋 그리드 셀에 배정된 액션 라벨이 실시간 표시, 배정 셀은 액센트 강조.
+
+### 진행 단계
+
+1. PRD 7.4/5/11/12 갱신 커밋 후 `dev` → `feat/window-layout` 분기.
+2. `layout/` 모듈: PoC 의 ax.rs 포팅(+`same_element`, 프롬프트 없는 trust
+   체크) + Region(serde) + placer (창 대기/diff/배치, Chrome 경로 탐색,
+   pgrep -x → 번들 경로 fallback — VS Code 처럼 실행파일명이 다른 앱 대응).
+3. `Action` region 확장 + `execute.rs` 2단계 실행기 + lib.rs 배선.
+4. 프런트: `layout.ts` (프리셋/라벨/클램프) + 편집기 Layout 섹션 (프리셋
+   버튼, MonitorMockup, PlacementPermissionHint) + ActionRow 영역 셀렉트.
+5. 테스트 47개 (Region frame/serde 추가) / fmt / clippy / pnpm build 통과.
+6. 라이브 검증: 사용자가 2 split 으로 Cursor→왼쪽, YouTube URL→오른쪽 배정
+   후 박수 두 번 → 두 창이 좌우 절반에 자동 배치됨을 육안 확인.
+
+### 발견 사항
+
+- **dev 환경 권한 승계:** dev 바이너리는 Cursor(터미널 호스트)의 자식이라
+  TCC 가 Cursor 의 Accessibility 승인을 그대로 적용. 서명된 .app 배포 시엔
+  V.I.B.E 자체가 승인 대상이 됨 (Permission Guide 흐름 필요).
+- **stdout 블록 버퍼링:** 파이프로 리다이렉트된 dev 로그는 println 이 즉시
+  flush 되지 않아 프로세스 kill 시 마지막 로그가 유실될 수 있음. 검증은
+  육안 확인으로 대체했으나, exec-log feat 에서 로그를 UI 로 올리면 해소됨.
+
+### 다음 단계
+
+- `feat/menu-switcher`: 메뉴바 활성 루틴 전환.
+- `feat/exec-log`: 실행 로그 링 버퍼 + UI (PRD 7.6).
+- 백로그: 감도/간격 설정, 다중 모니터 지원(현재 메인 디스플레이 고정),
+  Chrome 외 브라우저 새 창, 코드 서명 + reboot 검증, Performance Pass.

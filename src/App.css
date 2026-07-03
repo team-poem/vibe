@@ -230,6 +230,145 @@ body {
   color: var(--text-dim);
 }
 
+/* ---------- layout mockup ---------- */
+
+.layoutSection {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.presetGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.presetButton {
+  padding: 7px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.presetButton:hover {
+  border-color: rgba(255, 138, 76, 0.4);
+}
+
+.presetButton.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.monitor {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.monitorScreen {
+  display: grid;
+  gap: 3px;
+  width: 300px;
+  aspect-ratio: 16 / 10;
+  padding: 6px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: #08070d;
+}
+
+.monitorScreen.preset-halves {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.monitorScreen.preset-thirds {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.monitorScreen.preset-quarters {
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+}
+
+.monitorCell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  padding: 4px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.monitorCell.filled {
+  border: 1px solid rgba(255, 138, 76, 0.55);
+  background: var(--accent-soft);
+}
+
+.monitorCellHint {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.monitorCellApp {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitorStand {
+  width: 56px;
+  height: 10px;
+  border-radius: 0 0 6px 6px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.monitorFullNote {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.permissionHint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 138, 76, 0.35);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+
+.actionRegionSelect {
+  flex: none;
+  max-width: 130px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-deep);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+}
+
 .actionRows {
   display: flex;
   flex-direction: column;
