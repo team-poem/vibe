@@ -1,51 +1,87 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+
+import { RoutineEditor } from "./domains/routines/components/RoutineEditor";
+import { RoutineSidebar } from "./domains/routines/components/RoutineSidebar";
+import { useRoutines } from "./domains/routines/useRoutines";
+import type { Routine } from "./domains/routines/types";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+export default function App() {
+  const { config, error, saveRoutine, deleteRoutine, setActiveRoutine } =
+    useRoutines();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+  if (!config) {
+    return (
+      <main className="app loading">
+        <p>{error ?? "Loading routines…"}</p>
+      </main>
+    );
+  }
+
+  const selectedRoutine =
+    config.routines.find((r) => r.id === selectedId) ??
+    config.routines.find((r) => r.id === config.activeRoutineId) ??
+    config.routines[0] ??
+    null;
+
+  async function handleCreateRoutine() {
+    const created = await saveRoutine(NEW_ROUTINE_TEMPLATE);
+    if (created) {
+      setSelectedId(created.id);
+    }
+  }
+
+  async function handleSaveRoutine(routine: Routine) {
+    await saveRoutine(routine);
+  }
+
+  async function handleDeleteRoutine(id: string) {
+    await deleteRoutine(id);
+    setSelectedId(null);
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <main className="app">
+      <RoutineSidebar
+        routines={config.routines}
+        activeRoutineId={config.activeRoutineId}
+        selectedId={selectedRoutine?.id ?? null}
+        onSelect={setSelectedId}
+        onCreate={handleCreateRoutine}
+      />
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
+      {selectedRoutine ? (
+        <RoutineEditor
+          key={selectedRoutine.id}
+          routine={selectedRoutine}
+          isActive={selectedRoutine.id === config.activeRoutineId}
+          onSave={handleSaveRoutine}
+          onDelete={handleDeleteRoutine}
+          onActivate={setActiveRoutine}
         />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
+      ) : (
+        <EmptyEditorPane onCreate={handleCreateRoutine} />
+      )}
+
+      {error && <p className="appError">{error}</p>}
     </main>
   );
 }
 
-export default App;
+const NEW_ROUTINE_TEMPLATE: Routine = {
+  id: "",
+  name: "New Routine",
+  actions: [],
+};
+
+const EmptyEditorPane = ({ onCreate }: { onCreate: () => Promise<void> }) => {
+  return (
+    <section className="editor empty">
+      <p>Create a routine to run on a double clap.</p>
+      <button type="button" className="primaryButton" onClick={onCreate}>
+        + New routine
+      </button>
+    </section>
+  );
+};
