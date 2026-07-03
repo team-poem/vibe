@@ -1,13 +1,13 @@
 pub mod action;
 mod audio;
 pub mod engine;
+pub mod layout;
 mod mic;
 mod pipeline;
 pub mod routine;
 
 use std::sync::{Arc, Mutex};
 
-use action::Action;
 use pipeline::{Engine, EngineEvent};
 use routine::{Routine, RoutineConfig, RoutineStore};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
@@ -35,24 +35,6 @@ impl AppStatus {
 struct EngineState(Engine);
 struct StatusState(Mutex<AppStatus>);
 struct StoreState(Arc<RoutineStore>);
-
-/// Run a routine's actions sequentially (MVP execution policy) and log
-/// each outcome. Runs on the engine's event worker thread.
-fn run_routine(actions: &[Action]) {
-    for action in actions {
-        match action::run(action) {
-            Ok(result) if result.exit_status.success() => println!(
-                "[routine] {} done in {:.0} ms",
-                result.action, result.dispatch_ms
-            ),
-            Ok(result) => eprintln!(
-                "[routine] {} exited with {}",
-                result.action, result.exit_status
-            ),
-            Err(err) => eprintln!("[routine] {err}"),
-        }
-    }
-}
 
 #[tauri::command]
 fn list_routines(store: tauri::State<'_, StoreState>) -> RoutineConfig {
@@ -83,6 +65,11 @@ fn set_active_routine(
     store.0.set_active_routine(id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn check_accessibility_permission(prompt: bool) -> bool {
+    layout::is_trusted(prompt)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -95,7 +82,8 @@ pub fn run() {
             list_routines,
             save_routine,
             delete_routine,
-            set_active_routine
+            set_active_routine,
+            check_accessibility_permission
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -116,7 +104,7 @@ pub fn run() {
                     if actions.is_empty() {
                         println!("[routine] no active routine, trigger ignored");
                     } else {
-                        run_routine(&actions);
+                        action::run_routine(&actions);
                     }
                 }
                 EngineEvent::CaptureFailed(message) => {
