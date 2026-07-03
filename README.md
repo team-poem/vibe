@@ -1,97 +1,150 @@
-# V.I.B.E
+<div align="center">
 
-> **V.I.B.E (Volume-Initiated Background Establisher)** — clap twice, and your
-> workspace appears. A macOS menu bar app that detects a double clap and
-> instantly launches your apps, opens your URLs, and snaps every window into
-> a screen layout you designed.
+# 👏👏 V.I.B.E
 
-**Turn on your Mac → clap twice. That's the whole workflow.**
+### Clap twice. Your workspace appears.
 
-## The Problem
+**V.I.B.E** is a macOS app that turns a double clap into your entire work
+setup — your apps launch, your tabs open, and every window snaps into the
+screen layout you designed. No keyboard, no mouse, no dock diving.
 
-Starting a focused work session means repeating the same small setup steps
-every time: opening apps, launching browser tabs, arranging windows,
-starting music. Individually trivial — together, real friction before you
-can actually begin.
+![macOS](https://img.shields.io/badge/platform-macOS-black?logo=apple)
+![Made with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB?logo=tauri&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Status](https://img.shields.io/badge/status-MVP-ff8a4c)
 
-- **Repetitive manual setup** every time you sit down.
-- **Context switching** before entering a focused state.
-- **Fragmented automation** across shortcuts, scripts, and launchers.
+<!-- demo: hero gif — double clap → workspace assembling itself -->
 
-## What V.I.B.E Does
+</div>
 
-| | |
-|---|---|
-| 👏 **Double-clap trigger** | A rule-based audio engine (adaptive noise floor, spectral analysis, decay gating) detects two claps from the built-in mic — while ignoring typing, speech, and music. Zero false positives in tuning tests. |
-| 🧩 **Routines** | Combine actions — launch apps, open URLs — into named routines. One routine is *active* at a time and fires on the clap. |
-| 🖥️ **Window layout** | Assign each action a screen region on a monitor mockup — split the screen in halves, thirds, or quadrants — and windows snap into place as they open, Rectangle-style, automatically. |
-| 🎛️ **Menu bar native** | Lives in the menu bar (no Dock icon). Switch the active routine, pause detection, or toggle launch-at-login without opening a window. |
-| 📜 **Execution log** | Every run is recorded with per-action results; failures name the exact action and reason. |
-| 🔒 **Fully local** | No account, no login, no server. Audio never leaves the machine; all analysis and data stay in local files. |
+---
 
-## How It Works
+## Your morning, before and after
 
-```
-mic (cpal) ──► streaming clap detector ──► double-clap matcher ──► action runner
-    │              adaptive floor              interval +               open -a / URL
-    │              FFT flatness                similarity gates             │
-    └── audio thread ── detection thread ── event worker ── window placer (AX API)
-```
+**Before:** power on → open Cursor → open Chrome → find yesterday's tabs →
+drag windows around → find the playlist → *finally* start working.
 
-- **Fast path:** clap-to-first-action target is under 300 ms; measured
-  dispatch is ~130–160 ms.
-- **Two-phase execution:** all actions launch first, then windows are
-  waited on and placed — a slow cold launch never delays the next action.
-- **Resilient placement:** fixed-size windows are moved without resizing;
-  URL actions get their own fresh browser window, identified by diffing the
-  window list.
+**After:** power on → 👏👏
 
-## Getting Started
+V.I.B.E waits silently in your menu bar from the moment your Mac starts.
+Two claps and your workspace assembles itself — in under a second.
+
+## Features
+
+**👏 A trigger you always carry**
+No hotkey to remember, no widget to find. The detection engine reads the
+built-in mic with an adaptive noise floor and spectral analysis — it knows
+the difference between your claps and your typing, your voice, or your
+music. All processing stays on-device.
+
+**🧩 Routines for every mode**
+*Deep work. Chart watching. Music night.* Build a routine for each — apps to
+launch, URLs to open, in the order you want. Switch the active routine right
+from the menu bar.
+
+**🖥️ Your screen, pre-arranged**
+Design your layout on a monitor mockup, just like display settings: split
+the screen into halves, thirds, or quadrants and drop each app or page into
+its region. When the routine fires, windows don't just open — they land
+exactly where they belong.
+
+**⚡ Faster than you can sit down**
+From clap to first action in well under 300 ms. Cold-launching apps never
+block the rest of the routine.
+
+**🔒 Nothing leaves your Mac**
+No account. No sign-up. No server. Your routines live in a local file and
+your microphone audio is analyzed in memory, on-device, and never stored or
+sent anywhere.
+
+**📜 Know what happened**
+Every run is logged with per-action results. If something fails, you'll see
+exactly which action and why.
+
+## Download
+
+🚧 **Landing page & signed builds coming soon.**
+Until then, you can [build it from source](#build-from-source) in a couple
+of minutes.
+
+## First run in 60 seconds
+
+1. Open **V** in the menu bar → **Show settings**.
+2. Create a routine — add *Launch app* and *Open URL* actions.
+3. Pick a split (2 / 3 / 4) and assign each action a region on the monitor
+   mockup.
+4. Hit **Set active**, allow the **Microphone** prompt (and
+   **Accessibility**, if you use window placement).
+5. Turn on *Auto-start on login*, close the window, and clap twice. 👏👏
+
+> Tip: a natural, quick double clap — two claps within about half a second.
+
+---
+
+<details>
+<summary><b>Build from source</b></summary>
 
 Requirements: macOS, Rust (stable), Node.js + pnpm.
 
 ```bash
+git clone https://github.com/team-poem/vibe.git && cd vibe
 pnpm install
-pnpm tauri dev      # run in development
-pnpm tauri build    # produce V.I.B.E.app / dmg
+pnpm tauri dev      # development
+pnpm tauri build    # V.I.B.E.app + dmg
 ```
 
-On first run:
+Routine data lives in `~/Library/Application Support/com.vibe.app/routines.json`.
 
-1. Click the **V** icon in the menu bar → **Show settings**.
-2. Build a routine: add *Launch app* / *Open URL* actions, pick a split
-   layout, and assign regions on the monitor mockup.
-3. **Set active**, save, and grant the two permissions when prompted:
-   - **Microphone** — for clap detection.
-   - **Accessibility** — only if you use window placement.
-4. Clap twice. 👏👏 (150–600 ms apart — a natural quick double clap.)
+</details>
 
-All routine data lives in
-`~/Library/Application Support/com.vibe.app/routines.json`.
+<details>
+<summary><b>How it works</b></summary>
 
-## Tech Stack
+```
+mic (cpal) ──► streaming clap detector ──► double-clap matcher ──► action runner
+                adaptive noise floor        interval + similarity     open apps/URLs
+                FFT spectral flatness       gates                         │
+                                                                 window placer (AX API)
+```
 
-- **Shell:** Tauri 2 (Rust) — chosen over Electron for background footprint
-  and trigger-to-action latency.
-- **Audio:** `cpal` capture + custom DSP (RMS, adaptive EMA floor,
-  `rustfft` spectral flatness) on a dedicated thread.
-- **Window control:** macOS Accessibility (AXUIElement) API via safe Rust
-  wrappers.
-- **UI:** React + TypeScript.
+- Audio capture, detection, and action execution run on separate threads —
+  a busy UI can never delay a trigger.
+- Actions launch first, then windows are awaited and placed, so one slow
+  app never holds up the rest.
+- Fixed-size windows are moved without resizing; URL actions open a fresh
+  browser window identified by diffing the window list.
 
-## Project Docs
+**Stack:** Tauri 2 (Rust) · cpal + rustfft DSP · macOS Accessibility API ·
+React + TypeScript.
+
+</details>
+
+<details>
+<summary><b>Project docs & development</b></summary>
 
 - [`spec/prd.md`](spec/prd.md) — product requirements.
-- [`spec/history.md`](spec/history.md) — full development journal, from the
-  first PoC to each shipped feature.
-- `poc/*` branches — five self-contained proofs of concept (audio capture,
-  clap detection, double-clap matching, action latency, tauri shell, window
-  layout), preserved unmerged as reference.
-- `spec/code/` — coding conventions enforced across the repo.
+- [`spec/history.md`](spec/history.md) — development journal, from first PoC
+  to each shipped feature.
+- `poc/*` branches — six self-contained proofs of concept, preserved
+  unmerged as reference.
+- `spec/code/` — coding conventions (Rust & frontend) enforced across the
+  repo.
+
+Branch model: `main` (releases) ← `dev` ← `feat/*`.
+
+</details>
 
 ## Roadmap
 
-- Sensitivity & clap-interval tuning UI
-- Multi-monitor layouts
-- More actions: scripts, Shortcuts, music & volume control
-- Signed, notarized builds with verified launch-at-login
+- [ ] Landing page & signed, notarized builds
+- [ ] Clap sensitivity & interval tuning UI
+- [ ] Multi-monitor layouts
+- [ ] More actions — scripts, Shortcuts, music & volume
+
+---
+
+<div align="center">
+
+MIT © team-poem — <em>Made to be heard.</em> 👏👏
+
+</div>
