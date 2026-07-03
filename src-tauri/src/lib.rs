@@ -1,3 +1,4 @@
+pub mod action;
 mod audio;
 pub mod engine;
 mod mic;
@@ -5,6 +6,7 @@ mod pipeline;
 
 use std::sync::Mutex;
 
+use action::Action;
 use pipeline::{Engine, EngineEvent};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -33,16 +35,25 @@ struct StatusState(Mutex<AppStatus>);
 
 /// Placeholder routine until the routine store lands: double clap opens
 /// Calculator so the full pipeline can be verified end to end.
-fn run_hardcoded_routine() {
-    let outcome = std::process::Command::new("open")
-        .args(["-a", "Calculator"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    match outcome {
-        Ok(status) if status.success() => println!("[routine] launched Calculator"),
-        Ok(status) => eprintln!("[routine] open exited with {status}"),
-        Err(err) => eprintln!("[routine] failed to run open: {err}"),
+fn hardcoded_routine() -> Vec<Action> {
+    vec![Action::open_app("Calculator")]
+}
+
+/// Run a routine's actions sequentially (MVP execution policy) and log
+/// each outcome. Runs on the engine's event worker thread.
+fn run_routine(actions: &[Action]) {
+    for action in actions {
+        match action::run(action) {
+            Ok(result) if result.exit_status.success() => println!(
+                "[routine] {} done in {:.0} ms",
+                result.action, result.dispatch_ms
+            ),
+            Ok(result) => eprintln!(
+                "[routine] {} exited with {}",
+                result.action, result.exit_status
+            ),
+            Err(err) => eprintln!("[routine] {err}"),
+        }
     }
 }
 
@@ -67,7 +78,7 @@ pub fn run() {
                         "[trigger] double clap interval={}ms confidence={:.2}",
                         trigger.interval_ms, trigger.confidence
                     );
-                    run_hardcoded_routine();
+                    run_routine(&hardcoded_routine());
                 }
                 EngineEvent::CaptureFailed(message) => {
                     eprintln!("[audio] capture failed: {message}");

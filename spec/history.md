@@ -630,3 +630,52 @@ pub fn start(on_event: impl Fn(EngineEvent) + Send + 'static) -> Engine
   `run()` 포팅, 측정용 `measure`/`Distribution` 은 제외. 하드코딩 루틴 교체.
 - `feat/routine-store`: Routine 모델 + JSON 영속화 + Tauri 커맨드.
 - 남은 백로그: 코드 서명 + /Applications/ 설치 후 reboot 자동 실행 재검증.
+
+## 2026-07-03 (feat/action-runner)
+
+### 목적
+
+poc/action-runner 의 액션 실행기를 제품으로 포팅하고, audio-engine 이 남긴
+하드코딩 계산기 호출(`std::process::Command` 직접 사용)을 정식 `Action` +
+`run()` 경로로 교체.
+
+### 결정 사항
+
+- **MVP 2종만 포팅 (OpenApp / OpenUrl).** PRD 확정 범위. PoC 의 Osascript /
+  Shortcut 변형은 poc/action-runner 브랜치에 박제돼 있으므로 확장 시 재이식.
+- **PoC 의 측정 스캐폴딩 제거:** `measure` / `Distribution` / `Stats` / `parse`
+  는 PoC 벤치마크·CLI 용이라 제품에서 제외. `ActionResult` 의 spawn/dispatch
+  타이밍은 실행 로그와 Performance Pass 에 쓰이므로 유지.
+- **serde derive 추가:** `#[serde(tag = "type", rename_all = "kebab-case")]` 로
+  `{"type":"open-app","name":"Cursor"}` 형태 직렬화. 다음 feat(routine-store)
+  의 JSON 영속화 대비. 미지원 type 은 역직렬화 시 에러(테스트로 고정).
+- **백로그 반영:** 서브프로세스 stdout/stderr 를 `Stdio::null()` 로 차단
+  (PoC 에서 발견된 osascript 출력 누출 문제의 근본 대응).
+- **루틴 순차 실행 헬퍼:** `run_routine(&[Action])` 이 액션을 순서대로 실행하고
+  결과를 로그. MVP 실행 정책(순차) 그대로. 이벤트 워커 스레드에서 돌므로 감지
+  경로 블로킹 없음.
+
+### 진행 단계
+
+1. `dev` → `feat/action-runner` 분기.
+2. `src-tauri/src/action/mod.rs` (Action enum + serde) + `action/runner.rs`
+   (`run`, `RunError`, `ActionResult`) 작성.
+3. `lib.rs` 의 `run_hardcoded_routine` → `hardcoded_routine() -> Vec<Action>` +
+   `run_routine` 으로 교체.
+4. 단위 테스트 5개 (args 매핑 2, serde 라운드트립 2, 미지원 kind 기각 1).
+   전체 31개 테스트 / fmt / clippy `-D warnings` 통과.
+
+### 인터페이스 계약 (다음 feat `routine-store` 로 이어짐)
+
+```rust
+pub enum Action { OpenApp { name: String }, OpenUrl { url: String } }  // serde 지원
+pub fn run(action: &Action) -> Result<ActionResult, RunError>
+```
+
+Routine 모델은 `Vec<Action>` 을 담고, 실행은 `run_routine` 패턴을 흡수하면 됨.
+
+### 다음 단계
+
+- `feat/routine-store`: Routine 모델(이름 + `Vec<Action>`) + JSON 로컬 영속화
+  (app data dir, 손상 시 기본값 복구) + Tauri 커맨드 노출 + 활성 루틴 개념.
+- 그 후 `feat/routine-editor` (React UI) + 메뉴바 활성 루틴 전환.
