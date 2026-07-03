@@ -27,6 +27,19 @@ export interface RoutineConfig {
   routines: Routine[];
 }
 
+export interface ActionOutcome {
+  label: string;
+  success: boolean;
+  detail: string;
+}
+
+export interface ExecutionRecord {
+  atEpochMs: number;
+  routineName: string;
+  success: boolean;
+  outcomes: ActionOutcome[];
+}
+
 export const actionValue = (action: Action): string => {
   return action.type === "open-app" ? action.name : action.url;
 };

@@ -1,5 +1,7 @@
+mod exec_log;
 mod store;
 
+pub use exec_log::{ActionOutcome, ExecutionLog, ExecutionRecord};
 pub use store::{LoadReport, RoutineStore, StoreError};
 
 use serde::{Deserialize, Serialize};
