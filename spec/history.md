@@ -907,3 +907,36 @@ PoC 로 검증한 창 배치를 제품에 통합. 루틴의 각 액션에 화면
 - `feat/exec-log`: 실행 로그 링 버퍼 + UI (PRD 7.6).
 - 백로그: 감도/간격 설정, 다중 모니터 지원(현재 메인 디스플레이 고정),
   Chrome 외 브라우저 새 창, 코드 서명 + reboot 검증, Performance Pass.
+
+## 2026-07-03 (feat/menu-switcher)
+
+### 목적
+
+PRD 7.4 의 Active Routine Switcher: 설정 창을 열지 않고 메뉴바에서 활성
+루틴을 전환.
+
+### 결정 사항
+
+- **메뉴는 상태에서 전량 재구성.** 기존 셸은 고정 메뉴 항목 핸들을 클로저에
+  캡처해 `set_text`/`set_checked` 로 갱신했는데, 루틴 목록이 동적으로 변하면
+  캡처된 핸들이 stale 해짐. `build_tray_menu(app)` 가 StatusState / Engine /
+  autostart / RoutineStore 스냅샷에서 메뉴 전체를 만들고, 모든 상태 변화가
+  `refresh_tray_menu` 로 교체하는 단방향 구조로 리팩터링.
+- **루틴 항목:** "Active routine" 라벨 아래 CheckMenuItem (`routine:<id>`).
+  클릭 시 활성 전환, 이미 활성인 항목 클릭 시 비활성(None). 루틴 0개면
+  비활성 "No routines yet".
+- **양방향 동기화:** 루틴 문서가 바뀌는 모든 경로(커맨드 3종 + 트레이 클릭)가
+  `notify_routines_changed` 로 수렴 — `routines://changed` 이벤트 emit(웹뷰
+  refetch) + 트레이 재구성. useRoutines 훅이 이벤트를 구독해 편집기가 열려
+  있어도 트레이 전환이 즉시 반영됨.
+
+### 진행 단계
+
+1. `dev` → `feat/menu-switcher` 분기. lib.rs 메뉴 구성 전면 리팩터링.
+2. 커맨드에 `AppHandle` 주입 + notify 배선. useRoutines 에 이벤트 리스너.
+3. 테스트 47개 / fmt / clippy / pnpm build 통과. 라이브 확인은 exec-log 와
+   묶어서 최종 세션에서 진행.
+
+### 다음 단계
+
+- `feat/exec-log` 진행 후 통합 라이브 검증.
