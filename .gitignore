@@ -1,0 +1,13 @@
+# Cargo build output
+/target
+
+# Leftovers from sibling product branches (dev/feat trees)
+/node_modules
+/dist
+/src-tauri
+/samples
+*.wav
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+.DS_Store
