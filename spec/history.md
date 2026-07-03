@@ -800,3 +800,50 @@ type Action = { type: "open-app"; name: string } | { type: "open-url"; url: stri
   루틴 변경 시 메뉴 재구성).
 - `feat/exec-log`: 실행 결과 로그 (PRD 7.6 — 링 버퍼 + UI 표시 + 실패 액션 표시).
 - 백로그 유지: 감도/간격 설정 UI, 코드 서명 + reboot 재검증, Performance Pass.
+
+## 2026-07-03 (poc/window-layout)
+
+### 목적
+
+사용자 요청으로 새 기능 방향 확정: 루틴 실행 시 앱/URL 을 여는 데서 끝나지
+않고 **화면 분할 영역에 자동 배치** (Rectangle/Spectacle 의 스냅을 루틴에
+내장). 편집기에는 모니터 목업에서 2/3/4분할 영역에 액션을 배정하는 UI 가
+들어갈 예정. 선행 리스크(Rust 에서 AX API 로 타 앱 창 제어)를 PoC 로 검증.
+컨벤션대로 `main` 에서 분기, 머지하지 않음.
+
+### 결정 사항
+
+- **의존성:** `accessibility-sys`(AX FFI) + `core-foundation` +
+  `core-graphics`. unsafe 는 `ax.rs` 모듈에만 격리하고 안전 래퍼로 노출.
+- **고정 크기 창 관용 정책:** 리사이즈 거부(AXError -25200) 시 위치만 적용하고
+  `Placement::MovedOnly` 로 보고. 에러 아님 (Rectangle 과 동일 정책).
+- **PoC 브랜치에 .gitignore 필수:** main 엔 .gitignore 가 없어 dev 작업 잔재
+  (node_modules 등)가 전부 untracked 로 노출됨. 브랜치 첫 커밋에 포함.
+
+### 검증 결과 (가설 4개 모두 통과)
+
+| 가설 | 결과 |
+|---|---|
+| Rust 에서 타 앱 창 이동/리사이즈 | ✓ (Notes/Safari Full, Calculator/Mail MovedOnly) |
+| 실행→창 대기→배치 지연 | ✓ warm ~150ms, cold 0.6~1.6s (50ms 폴링) |
+| 2/3/4분할 일괄 배치 | ✓ demo2/demo4 시각 확인 |
+| URL 새 브라우저 창 배치 | ✓ Chrome 바이너리 직접 호출 + bottom-right 배치 |
+
+### 발견 사항 (본 구현에 직결)
+
+- **권한은 호출 프로세스에만.** 제어 대상 앱은 권한 불필요. 제품에선
+  V.I.B.E.app 이 `AXIsProcessTrustedWithOptions(prompt)` 호출 → 다이얼로그 →
+  설정 목록에 자동 등록 → 사용자는 토글 한 번. Permission Guide UX 확정.
+- **`open --args --new-window` 는 실행 중인 앱에 무시됨.** 이미 뜬 Chrome 에
+  URL 새 창을 만들려면 브라우저 바이너리 직접 호출 필요. 실측으로 확인.
+- **AXWindows[0]=새 창 가정은 레이스.** 기존 창을 옮기는 오동작 실측. 본
+  구현은 열기 전 창 스냅샷 → 열기 후 diff 로 새 창 식별해야 함.
+- 세부 측정치와 인터페이스 계약은 `poc/window-layout` 브랜치의 POC.md 참조.
+
+### 다음 단계
+
+- PRD 갱신: 7.4 액션에 화면 배치(레이아웃) 확장, 5장 권한에 Accessibility
+  실사용 명시, MVP 범위 결정 필요.
+- `feat/window-layout`: `Action` 에 `region: Option<Region>` 추가 + AX 배치
+  모듈 통합 + 편집기에 모니터 목업 레이아웃 UI.
+- 기존 잔여: `feat/menu-switcher`, `feat/exec-log`, 감도 설정, 코드 서명 검증.
