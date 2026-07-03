@@ -101,6 +101,14 @@ fn run_detection(
             StreamingDetector::new(chunk.sample_rate, DetectorConfig::default())
         });
         for clap in detector.push(&chunk.samples) {
+            println!(
+                "[clap] t={}ms peak={:.1}dB above_floor={:.1}dB flatness={:.2} confidence={:.2}",
+                clap.timestamp_ms,
+                clap.peak_db,
+                clap.above_floor_db,
+                clap.flatness,
+                clap.confidence
+            );
             if let Some(trigger) = matcher.push(clap) {
                 if event_tx.send(EngineEvent::Trigger(trigger)).is_err() {
                     return;

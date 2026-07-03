@@ -745,3 +745,58 @@ type Action = { type: "open-app"; name: string } | { type: "open-url"; url: stri
 - `feat/routine-editor`: React 루틴 편집기 UI (frontend 스펙 준수) + 메뉴바
   활성 루틴 전환(Active Routine Switcher) + 실행 로그 표시.
 - 백로그 유지: 코드 서명 + reboot 자동 실행 재검증, Performance Pass.
+
+## 2026-07-03 (feat/routine-editor)
+
+### 목적
+
+사용자가 원하는 앱/URL 을 자유롭게 조합해 루틴을 만드는 React 편집기 UI.
+이걸로 MVP 의 핵심 사용자 플로우("루틴 등록 → 활성화 → 박수 두 번")가 하드코딩
+없이 완성됨. 템플릿으로 남아 있던 Tauri 기본 화면(greet) 제거.
+
+### 결정 사항
+
+- **구조 (cohesion-coupling 스펙):** `src/domains/routines/` 아래 `types.ts` /
+  `api.ts`(invoke 래퍼) / `useRoutines.ts`(문서 상태 훅) / `components/`.
+  App.tsx 는 조합만. 추가 의존성 0 (react-query / react-hook-form / zod 안 씀 —
+  이 규모 폼에 과함).
+- **상태 흐름:** 모든 뮤테이션이 스토어가 반환하는 갱신된 `RoutineConfig` 로
+  전체 교체 → UI 가 영속 파일과 어긋날 수 없음. 편집 중 초안은
+  `RoutineEditor` 로컬 state, `key={routine.id}` 로 루틴 전환 시 초기화.
+  신규 루틴은 빈 id 로 저장 → 스토어가 발급한 id 를 diff 로 찾아 선택 유지.
+- **검증 (predictability 스펙):** `ValidationResult` discriminated union.
+  이름 비어있음 / 액션 0개 / 값 비어있음 / URL http(s) 아님 기각.
+- **디자인 (design-guide):** 다크 인디고 그라디언트 배경 + 앰버 액센트, CSS
+  변수 토큰, 로컬 전용 앱이라 원격 폰트 불가 → macOS 내장 Avenir Next
+  (Condensed) 스택. 의도된 모션 3개: 활성 dot 펄스, 편집기 fadeSlide 전환,
+  버튼/리스트 호버. 카드형 컨테이너는 인터랙션 단위(액션 행)에만.
+- **clap 레벨 로그 추가:** 라이브 검증 중 "박수 쳤는데 안 됨" 상황에서 detector
+  기각인지 matcher 기각인지 구분이 안 돼 `[clap]` 로그(피크/플로어 대비/
+  flatness/confidence)를 pipeline 에 영구 추가. 감도 튜닝 관측성 확보.
+- **greet 커맨드 제거:** 프런트가 더 이상 안 쓰는 템플릿 잔재.
+
+### 진행 단계
+
+1. `dev` → `feat/routine-editor` 분기. frontend 스펙 7개 + design-guide 정독.
+2. 도메인 레이어 (types / api / useRoutines) → 컴포넌트 (RoutineSidebar,
+   RoutineEditor + ActionRow/ActiveToggle) → App 조합 → App.css 토큰 기반 전면 교체.
+3. `pnpm build` (tsc) + cargo test 43개 + fmt / clippy 통과.
+4. 라이브 검증: 사용자가 편집기에서 "Cursor 실행 + YouTube URL" 루틴을 직접
+   만들고 활성화 → 박수 두 번 → Cursor 135 ms / URL 126 ms 에 실행 확인.
+
+### 측정 결과 / 발견 사항
+
+- **트리거 실측:** interval=240 ms, confidence 0.43. open-app(Cursor) 135 ms,
+  open-url 126 ms — PRD 300 ms 목표 내.
+- **"작동 안 함" 리포트의 실제 원인은 박수 템포.** 사용자의 첫 시도는 두 박수
+  간격이 1.47 s 로 max_interval(600 ms) 초과 → 각각 단일 박수로 기각. 코드
+  결함 아님. `[clap]` 로그 덕에 즉시 진단됨. 향후 "감도/간격 설정" feat 에서
+  사용자가 간격을 조정할 수 있게 하면 완화 가능.
+- 루틴 저장/활성 전환/영속화는 첫 시도에 전부 정상 동작 (routines.json 확인).
+
+### 다음 단계
+
+- `feat/menu-switcher`: 메뉴바에서 활성 루틴 전환 (트레이 메뉴 동적 서브메뉴,
+  루틴 변경 시 메뉴 재구성).
+- `feat/exec-log`: 실행 결과 로그 (PRD 7.6 — 링 버퍼 + UI 표시 + 실패 액션 표시).
+- 백로그 유지: 감도/간격 설정 UI, 코드 서명 + reboot 재검증, Performance Pass.

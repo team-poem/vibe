@@ -55,11 +55,6 @@ fn run_routine(actions: &[Action]) {
 }
 
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tauri::command]
 fn list_routines(store: tauri::State<'_, StoreState>) -> RoutineConfig {
     store.0.snapshot()
 }
@@ -97,7 +92,6 @@ pub fn run() {
             None,
         ))
         .invoke_handler(tauri::generate_handler![
-            greet,
             list_routines,
             save_routine,
             delete_routine,
