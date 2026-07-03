@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { listen } from "@tauri-apps/api/event";
+
 import {
   deleteRoutineFromStore,
   fetchRoutineConfig,
@@ -24,14 +26,23 @@ export const useRoutines = (): UseRoutinesResult => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    async function loadInitialConfig() {
+    async function loadConfig() {
       try {
         setConfig(await fetchRoutineConfig());
       } catch (cause) {
         setError(String(cause));
       }
     }
-    void loadInitialConfig();
+    void loadConfig();
+
+    // The tray menu can switch the active routine while this window is
+    // open; the backend broadcasts document changes so both stay in sync.
+    const unlisten = listen("routines://changed", () => {
+      void loadConfig();
+    });
+    return () => {
+      void unlisten.then((dispose) => dispose());
+    };
   }, []);
 
   async function saveRoutine(routine: Routine): Promise<Routine | null> {
