@@ -3,11 +3,13 @@ mod audio;
 pub mod engine;
 mod mic;
 mod pipeline;
+pub mod routine;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use action::Action;
 use pipeline::{Engine, EngineEvent};
+use routine::{Routine, RoutineConfig, RoutineStore};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
@@ -32,12 +34,7 @@ impl AppStatus {
 
 struct EngineState(Engine);
 struct StatusState(Mutex<AppStatus>);
-
-/// Placeholder routine until the routine store lands: double clap opens
-/// Calculator so the full pipeline can be verified end to end.
-fn hardcoded_routine() -> Vec<Action> {
-    vec![Action::open_app("Calculator")]
-}
+struct StoreState(Arc<RoutineStore>);
 
 /// Run a routine's actions sequentially (MVP execution policy) and log
 /// each outcome. Runs on the engine's event worker thread.
@@ -62,6 +59,35 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+#[tauri::command]
+fn list_routines(store: tauri::State<'_, StoreState>) -> RoutineConfig {
+    store.0.snapshot()
+}
+
+#[tauri::command]
+fn save_routine(
+    store: tauri::State<'_, StoreState>,
+    routine: Routine,
+) -> Result<RoutineConfig, String> {
+    store.0.upsert_routine(routine).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_routine(
+    store: tauri::State<'_, StoreState>,
+    id: String,
+) -> Result<RoutineConfig, String> {
+    store.0.delete_routine(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_active_routine(
+    store: tauri::State<'_, StoreState>,
+    id: Option<String>,
+) -> Result<RoutineConfig, String> {
+    store.0.set_active_routine(id).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -70,21 +96,41 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             None,
         ))
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            list_routines,
+            save_routine,
+            delete_routine,
+            set_active_routine
+        ])
         .setup(|app| {
-            let engine = pipeline::start(|event| match event {
+            let data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&data_dir)?;
+            let (store, load_report) =
+                RoutineStore::load_or_recover(data_dir.join("routines.json"));
+            println!("[routine] store ready: {load_report:?}");
+            let store = Arc::new(store);
+
+            let trigger_store = store.clone();
+            let engine = pipeline::start(move |event| match event {
                 EngineEvent::Trigger(trigger) => {
                     println!(
                         "[trigger] double clap interval={}ms confidence={:.2}",
                         trigger.interval_ms, trigger.confidence
                     );
-                    run_routine(&hardcoded_routine());
+                    let actions = trigger_store.active_actions();
+                    if actions.is_empty() {
+                        println!("[routine] no active routine, trigger ignored");
+                    } else {
+                        run_routine(&actions);
+                    }
                 }
                 EngineEvent::CaptureFailed(message) => {
                     eprintln!("[audio] capture failed: {message}");
                 }
             });
             app.manage(EngineState(engine));
+            app.manage(StoreState(store));
             app.manage(StatusState(Mutex::new(AppStatus::Waiting)));
 
             #[cfg(target_os = "macos")]

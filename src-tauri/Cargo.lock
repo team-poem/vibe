@@ -4472,6 +4472,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-opener",
  "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
