@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { ExecutionLogPanel } from "./domains/routines/components/ExecutionLogPanel";
 import { RoutineEditor } from "./domains/routines/components/RoutineEditor";
 import { RoutineSidebar } from "./domains/routines/components/RoutineSidebar";
 import { useRoutines } from "./domains/routines/useRoutines";
@@ -51,18 +52,21 @@ export default function App() {
         onCreate={handleCreateRoutine}
       />
 
-      {selectedRoutine ? (
-        <RoutineEditor
-          key={selectedRoutine.id}
-          routine={selectedRoutine}
-          isActive={selectedRoutine.id === config.activeRoutineId}
-          onSave={handleSaveRoutine}
-          onDelete={handleDeleteRoutine}
-          onActivate={setActiveRoutine}
-        />
-      ) : (
-        <EmptyEditorPane onCreate={handleCreateRoutine} />
-      )}
+      <div className="mainPane">
+        {selectedRoutine ? (
+          <RoutineEditor
+            key={selectedRoutine.id}
+            routine={selectedRoutine}
+            isActive={selectedRoutine.id === config.activeRoutineId}
+            onSave={handleSaveRoutine}
+            onDelete={handleDeleteRoutine}
+            onActivate={setActiveRoutine}
+          />
+        ) : (
+          <EmptyEditorPane onCreate={handleCreateRoutine} />
+        )}
+        <ExecutionLogPanel />
+      </div>
 
       {error && <p className="appError">{error}</p>}
     </main>

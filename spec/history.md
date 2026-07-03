@@ -940,3 +940,41 @@ PRD 7.4 의 Active Routine Switcher: 설정 창을 열지 않고 메뉴바에서
 ### 다음 단계
 
 - `feat/exec-log` 진행 후 통합 라이브 검증.
+
+## 2026-07-03 (feat/exec-log — MVP 마지막 항목)
+
+### 목적
+
+PRD 7.6: 루틴 실행 결과를 로그로 확인하고, 실패 시 어떤 액션이 왜 실패했는지
+보이게. 이걸로 PRD 11 MVP 범위의 기능 항목이 전부 구현됨.
+
+### 결정 사항
+
+- **`run_routine` 이 구조화된 결과 반환:** 콘솔 출력만 하던 실행기가 액션당
+  `ActionOutcome { label, success, detail }` 을 원래 액션 순서대로 반환.
+  콘솔 로그는 진단용으로 유지 (stdout 버퍼링 이슈로 UI 로그가 주 채널).
+- **부분 실패 정책:** 앱은 열렸는데 배치만 실패한 경우 액션은 성공으로 두고
+  detail 에 배치 실패를 기록. 영역 지정 URL 은 배치 경로가 곧 열기 경로라
+  실패 시 액션 실패로 기록.
+- **링 버퍼 (cap 50), 영속화 없음:** 로그는 진단 데이터지 사용자 데이터가
+  아님. `ExecutionLog` 는 Mutex<VecDeque>, 최신순 스냅샷.
+- **이벤트 푸시:** 트리거 처리 후 `exec-log://updated` emit →
+  `useExecutionLog` 훅이 refetch. 편집기 하단 "Recent runs" 패널에 최신순
+  표시, 실패 런은 ✕ + 실패 액션/사유 목록.
+
+### 진행 단계
+
+1. `dev` → `feat/exec-log` 분기.
+2. `routine/exec_log.rs` (ExecutionLog/Record/Outcome + 단위 테스트 2개) +
+   `execute.rs` 반환형 개편 + lib.rs (LogState, `list_execution_log` 커맨드,
+   트리거 클로저에서 기록+emit).
+3. 프런트: `useExecutionLog` 훅 + `ExecutionLogPanel` + mainPane 레이아웃.
+4. 테스트 49개 / fmt / clippy / pnpm build 통과. 라이브: 트레이 Active
+   routine 전환 + 박수 → Recent runs 실시간 기록 확인.
+
+### MVP 상태
+
+PRD 11 의 기능 항목 전부 구현: 셸/트레이/자동실행/마이크권한/이중박수감지/
+루틴 CRUD/활성 전환(메뉴바)/앱·URL 액션/화면 배치/실행 로그.
+남은 비기능 백로그: 감도 설정 UI, 코드 서명 + reboot 자동실행 재검증,
+Performance Pass, 다중 모니터.

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { Routine, RoutineConfig } from "./types";
+import type { ExecutionRecord, Routine, RoutineConfig } from "./types";
 
 export async function fetchRoutineConfig(): Promise<RoutineConfig> {
   return invoke<RoutineConfig>("list_routines");
@@ -30,4 +30,9 @@ export async function checkAccessibilityPermission(
   prompt: boolean,
 ): Promise<boolean> {
   return invoke<boolean>("check_accessibility_permission", { prompt });
+}
+
+/// Recent routine runs, newest first.
+export async function fetchExecutionLog(): Promise<ExecutionRecord[]> {
+  return invoke<ExecutionRecord[]>("list_execution_log");
 }

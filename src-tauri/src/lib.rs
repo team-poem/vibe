@@ -9,7 +9,7 @@ pub mod routine;
 use std::sync::{Arc, Mutex};
 
 use pipeline::{Engine, EngineEvent};
-use routine::{Routine, RoutineConfig, RoutineStore};
+use routine::{ExecutionLog, ExecutionRecord, Routine, RoutineConfig, RoutineStore};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WindowEvent};
@@ -38,6 +38,14 @@ impl AppStatus {
 struct EngineState(Engine);
 struct StatusState(Mutex<AppStatus>);
 struct StoreState(Arc<RoutineStore>);
+struct LogState(Arc<ExecutionLog>);
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 #[tauri::command]
 fn list_routines(store: tauri::State<'_, StoreState>) -> RoutineConfig {
@@ -80,6 +88,11 @@ fn set_active_routine(
 #[tauri::command]
 fn check_accessibility_permission(prompt: bool) -> bool {
     layout::is_trusted(prompt)
+}
+
+#[tauri::command]
+fn list_execution_log(log: tauri::State<'_, LogState>) -> Vec<ExecutionRecord> {
+    log.0.snapshot()
 }
 
 /// Build the tray menu from the current app state. The menu is rebuilt
@@ -218,7 +231,8 @@ pub fn run() {
             save_routine,
             delete_routine,
             set_active_routine,
-            check_accessibility_permission
+            check_accessibility_permission,
+            list_execution_log
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -228,19 +242,29 @@ pub fn run() {
             println!("[routine] store ready: {load_report:?}");
             let store = Arc::new(store);
 
+            let execution_log = Arc::new(ExecutionLog::new());
+
             let trigger_store = store.clone();
+            let trigger_log = execution_log.clone();
+            let trigger_app = app.handle().clone();
             let engine = pipeline::start(move |event| match event {
                 EngineEvent::Trigger(trigger) => {
                     println!(
                         "[trigger] double clap interval={}ms confidence={:.2}",
                         trigger.interval_ms, trigger.confidence
                     );
-                    let actions = trigger_store.active_actions();
-                    if actions.is_empty() {
+                    let Some(routine) = trigger_store.snapshot().active_routine().cloned() else {
                         println!("[routine] no active routine, trigger ignored");
-                    } else {
-                        action::run_routine(&actions);
-                    }
+                        return;
+                    };
+                    let outcomes = action::run_routine(&routine.actions);
+                    trigger_log.push(ExecutionRecord {
+                        at_epoch_ms: epoch_ms(),
+                        routine_name: routine.name,
+                        success: outcomes.iter().all(|o| o.success),
+                        outcomes,
+                    });
+                    let _ = trigger_app.emit("exec-log://updated", ());
                 }
                 EngineEvent::CaptureFailed(message) => {
                     eprintln!("[audio] capture failed: {message}");
@@ -248,6 +272,7 @@ pub fn run() {
             });
             app.manage(EngineState(engine));
             app.manage(StoreState(store));
+            app.manage(LogState(execution_log));
             app.manage(StatusState(Mutex::new(AppStatus::Waiting)));
 
             #[cfg(target_os = "macos")]
