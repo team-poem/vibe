@@ -1,6 +1,11 @@
+mod audio;
+pub mod engine;
 mod mic;
+mod pipeline;
 
 use std::sync::Mutex;
+
+use pipeline::{Engine, EngineEvent};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
@@ -23,8 +28,23 @@ impl AppStatus {
     }
 }
 
-struct DetectionState(Mutex<bool>);
+struct EngineState(Engine);
 struct StatusState(Mutex<AppStatus>);
+
+/// Placeholder routine until the routine store lands: double clap opens
+/// Calculator so the full pipeline can be verified end to end.
+fn run_hardcoded_routine() {
+    let outcome = std::process::Command::new("open")
+        .args(["-a", "Calculator"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match outcome {
+        Ok(status) if status.success() => println!("[routine] launched Calculator"),
+        Ok(status) => eprintln!("[routine] open exited with {status}"),
+        Err(err) => eprintln!("[routine] failed to run open: {err}"),
+    }
+}
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -41,7 +61,19 @@ pub fn run() {
         ))
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
-            app.manage(DetectionState(Mutex::new(true)));
+            let engine = pipeline::start(|event| match event {
+                EngineEvent::Trigger(trigger) => {
+                    println!(
+                        "[trigger] double clap interval={}ms confidence={:.2}",
+                        trigger.interval_ms, trigger.confidence
+                    );
+                    run_hardcoded_routine();
+                }
+                EngineEvent::CaptureFailed(message) => {
+                    eprintln!("[audio] capture failed: {message}");
+                }
+            });
+            app.manage(EngineState(engine));
             app.manage(StatusState(Mutex::new(AppStatus::Waiting)));
 
             #[cfg(target_os = "macos")]
@@ -109,11 +141,11 @@ pub fn run() {
                         }
                     }
                     "detection" => {
-                        let state = app.state::<DetectionState>();
-                        let mut enabled = state.0.lock().unwrap();
-                        *enabled = !*enabled;
-                        let _ = detection_handle.set_checked(*enabled);
-                        let next = if *enabled {
+                        let state = app.state::<EngineState>();
+                        let enabled = !state.0.is_detection_enabled();
+                        state.0.set_detection_enabled(enabled);
+                        let _ = detection_handle.set_checked(enabled);
+                        let next = if enabled {
                             AppStatus::Waiting
                         } else {
                             AppStatus::DetectionPaused
@@ -121,7 +153,7 @@ pub fn run() {
                         apply_status(app, &status_handle, next);
                         println!(
                             "[detection] {}",
-                            if *enabled { "enabled" } else { "disabled" }
+                            if enabled { "enabled" } else { "disabled" }
                         );
                     }
                     "autostart" => {
@@ -157,6 +189,7 @@ pub fn run() {
                         }
                     },
                     "quit" => {
+                        app.state::<EngineState>().0.shutdown();
                         app.exit(0);
                     }
                     _ => {}

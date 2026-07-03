@@ -18,6 +18,7 @@ target/
 # Audio capture leftovers from sibling PoCs
 *.wav
 samples/
+!src-tauri/tests/data/*.wav
 
 # Tauri-generated
 src-tauri/gen/schemas/
