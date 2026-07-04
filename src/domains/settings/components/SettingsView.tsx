@@ -10,7 +10,7 @@ import { useT } from "../../../shared/i18n/LanguageContext";
 import type { Language, MessageKey } from "../../../shared/i18n/messages";
 import type { ThemeSetting } from "../../../shared/theme";
 
-const APP_VERSION = "0.1.0";
+const APP_VERSION = "0.1.1";
 
 interface SettingsViewProps {
   language: Language;

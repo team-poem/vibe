@@ -1139,3 +1139,51 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - cargo test 55개, clippy, tsc/vite 빌드 통과.
+
+## 2026-07-05 (fix/permission-restart)
+
+### 변경
+
+- 손쉬운 사용 권한 배너에 "앱 재시작" 버튼과 안내 문구 추가
+  (`restart_app` 커맨드). 실행 중 프로세스에 새 권한이 반영되지 않는
+  macOS 동작에 대한 탈출구.
+
+### 검증
+
+- cargo clippy / tsc 빌드 통과.
+
+## 2026-07-05 (fix/no-scroll-editor)
+
+### 변경
+
+- 루틴 편집기를 무스크롤 레이아웃으로 전환: 푸터를 sticky 에서 정적
+  하단 고정으로 변경(콘텐츠 겹침 원천 차단), 캔버스·액션 컬럼은 내부
+  스크롤. 하단 요소가 푸터에 가려지던 문제의 구조적 해결.
+
+### 검증
+
+- 창 크기·배너 유무 변화에서 잘림 없음 확인.
+
+## 2026-07-05 (fix/canvas-shrink)
+
+### 변경
+
+- 높이 제약 시 flex 가 디스플레이 미니맵 컨테이너를 압축해 absolute
+  자식이 분할 탭 위로 넘치던 문제 수정 (`.canvas > * { flex: 0 0 auto }`).
+
+### 검증
+
+- 창 축소 상태에서 미니맵/탭 겹침 없음 확인.
+
+## 2026-07-05 (release 0.1.1)
+
+### 변경
+
+- 버전 0.1.1 (tauri.conf / Cargo.toml / 설정 화면 표기).
+
+### 기록
+
+- 서명 없는 빌드는 재빌드마다 코드 지문이 바뀌어 기존 TCC(마이크·손쉬운
+  사용) 승인이 무효화됨. 유령 항목은 `tccutil reset Accessibility
+  com.vibe.app` 으로 제거 후 재승인. 근본 해결은 서명 identity 확보
+  (Apple Developer) — 0.1.x 백로그 1순위.
