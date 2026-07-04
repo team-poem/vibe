@@ -739,11 +739,23 @@ body {
   cursor: default;
 }
 
+.permissionSub {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.permissionActions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
 .permissionHint {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex: none;
   margin-top: 16px;
   padding: 10px 14px;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);

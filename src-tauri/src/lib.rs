@@ -142,6 +142,13 @@ fn check_accessibility_permission(prompt: bool) -> bool {
     layout::is_trusted(prompt)
 }
 
+/// macOS may not surface a newly granted Accessibility permission to an
+/// already-running process; restarting the app is the reliable way out.
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart();
+}
+
 #[tauri::command]
 fn list_execution_log(log: tauri::State<'_, LogState>) -> Vec<ExecutionRecord> {
     log.0.snapshot()
@@ -344,6 +351,7 @@ pub fn run() {
             set_language,
             set_theme,
             check_accessibility_permission,
+            restart_app,
             list_execution_log,
             get_autostart,
             set_autostart,
