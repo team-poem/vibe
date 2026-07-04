@@ -305,7 +305,7 @@ export const RoutineEditor = ({
   }
 
   return (
-    <section className="editor">
+    <section className="editor routineEditor">
       <div className="editorHeader">
         <input
           className="routineNameInput"
