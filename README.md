@@ -2,52 +2,66 @@
 
 # V.I.B.E
 
-Clap twice. Your workspace appears.
+### Clap twice. Your workspace appears.
+
+A macOS menu bar app that turns a double clap into your work setup:
+your apps launch, your tabs open, and every window lands in the
+screen layout you designed.
 
 ![macOS](https://img.shields.io/badge/platform-macOS-black?logo=apple)
 ![Tauri](https://img.shields.io/badge/Tauri_2-Rust-24C8DB?logo=tauri&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+<!-- demo gif: double clap → workspace assembling -->
+
 </div>
 
-V.I.B.E is a macOS menu bar app that detects a double clap and runs your
-routine: launch apps, open URLs, and snap each window into a screen layout
-you set on a monitor mockup.
+## Why
 
-Everything runs on-device. No account, no server, no stored audio.
+Starting work means the same ritual every time: open the editor, open the
+tabs, drag windows around, start the music. V.I.B.E compresses that ritual
+into one gesture you always have with you.
+
+## Features
+
+- **Double-clap trigger.** A rule-based audio engine listens on-device and
+  tells your claps apart from typing, speech, and music.
+- **Routines.** Name a setup, stack app and URL actions, switch the active
+  one from the menu bar.
+- **Screen layout.** Drag actions onto a monitor mockup, split into halves,
+  thirds, or quadrants. Windows snap into place as they open.
+- **Fast.** Clap to first action in about 150 ms.
+- **Private.** No account, no server, no stored audio. One local JSON file.
 
 ## Install
 
-Download the latest `.dmg` from [Releases](https://github.com/team-poem/vibe/releases),
-open it, and drag **V.I.B.E** into Applications.
+Grab the latest `.dmg` from [Releases](https://github.com/team-poem/vibe/releases)
+and drag **V.I.B.E** into Applications.
 
-- Apple Silicon only.
-- The build is not notarized yet. If macOS blocks the first launch:
-  System Settings → Privacy & Security → **Open Anyway**, or run
+- Apple Silicon only, for now.
+- Builds are not notarized yet. If macOS blocks the first launch:
+  System Settings → Privacy & Security → **Open Anyway**, or
   `xattr -cr /Applications/V.I.B.E.app`.
 
-## Usage
+First run: pick a language, create a routine, set it active, allow the
+microphone (plus Accessibility if you place windows). Clap twice.
 
-1. Click **V** in the menu bar → Show settings.
-2. Create a routine: add app / URL actions, pick a split (2·3·4), click a
-   region on the monitor to place each action.
-3. Set the routine active. Allow **Microphone** when asked
-   (and **Accessibility**, if you use window placement).
-4. Clap twice.
-
-Routines can also be switched from the menu bar. Data lives in
-`~/Library/Application Support/com.vibe.app/routines.json`.
-
-## How it works
+## Under the hood
 
 ```
-mic (cpal) → clap detector → double-clap matcher → actions → window placement (AX API)
+mic (cpal) → streaming clap detector → double-clap matcher → action runner → window placer (AX API)
 ```
 
-- Rule-based detection: adaptive noise floor, FFT spectral flatness, decay
-  gating. Tuned for zero false positives against typing, speech, and music.
-- Clap-to-first-action latency is ~150 ms.
-- Audio capture, detection, and action execution run on separate threads.
+- **Detection** is rule-based DSP, not ML: adaptive noise floor (EMA),
+  FFT spectral flatness, decay gating, refractory windows. Tuned for zero
+  false positives on typing/speech/music test recordings.
+- **Matching** pairs claps 150–600 ms apart with similar peak and spectrum.
+- **Execution** is two-phase: all actions launch first, then windows are
+  awaited and placed, so one cold app never delays the rest. New browser
+  windows are identified by diffing the AX window list.
+- **Threading**: capture, detection, and action execution each run on their
+  own thread with channels in between; the UI can never block a trigger.
+- **Stack**: Tauri 2, Rust (`cpal`, `rustfft`, AXUIElement FFI), React + TS.
 
 ## Build from source
 
@@ -62,7 +76,7 @@ pnpm tauri build    # .app + .dmg
 ## Docs
 
 - [`spec/prd.md`](spec/prd.md) — product requirements
-- [`spec/history.md`](spec/history.md) — development journal
+- [`spec/history.md`](spec/history.md) — development journal, PoC to present
 - `poc/*` branches — standalone proofs of concept, kept unmerged as reference
 
 ## License
