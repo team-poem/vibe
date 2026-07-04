@@ -70,6 +70,12 @@ export async function testMicrophone(): Promise<string> {
   return invoke<string>("test_microphone");
 }
 
+/// Relaunch the app — required for a freshly granted Accessibility
+/// permission to take effect on a running process.
+export async function restartApp(): Promise<void> {
+  return invoke<void>("restart_app");
+}
+
 /// Connected displays in global coordinates, for the arrangement picker.
 export async function fetchDisplays(): Promise<DisplayInfo[]> {
   return invoke<DisplayInfo[]>("list_displays");
