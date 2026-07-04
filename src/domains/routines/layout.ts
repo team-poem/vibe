@@ -1,3 +1,4 @@
+import type { MessageKey } from "../../shared/i18n/messages";
 import type { Action, Region } from "./types";
 
 /// Split layouts the monitor mockup can show. The preset is a pure UI
@@ -10,23 +11,12 @@ export const PRESET_REGIONS: Record<LayoutPreset, Region[]> = {
   quarters: ["top-left", "top-right", "bottom-left", "bottom-right"],
 };
 
-export const PRESET_LABELS: Record<LayoutPreset, string> = {
-  halves: "2 split",
-  thirds: "3 split",
-  quarters: "4 split",
+export const presetLabelKey = (preset: LayoutPreset): MessageKey => {
+  return `preset.${preset}`;
 };
 
-export const REGION_LABELS: Record<Region, string> = {
-  full: "Full screen",
-  "left-half": "Left half",
-  "right-half": "Right half",
-  "left-third": "Left third",
-  "center-third": "Center third",
-  "right-third": "Right third",
-  "top-left": "Top left",
-  "top-right": "Top right",
-  "bottom-left": "Bottom left",
-  "bottom-right": "Bottom right",
+export const regionLabelKey = (region: Region): MessageKey => {
+  return `region.${region}`;
 };
 
 export const derivePreset = (actions: Action[]): LayoutPreset => {

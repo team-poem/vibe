@@ -1,16 +1,18 @@
+import { useLanguage, useT } from "../../../shared/i18n/LanguageContext";
 import { useExecutionLog } from "../useExecutionLog";
 import type { ExecutionRecord } from "../types";
 
 /// Recent routine runs with per-action results (PRD 7.6). Failures name
 /// the exact action that failed.
 export const ExecutionLogPanel = () => {
+  const t = useT();
   const records = useExecutionLog();
 
   return (
     <section className="logPanel" aria-label="Recent runs">
-      <h2 className="editorSectionTitle">Recent runs</h2>
+      <h2 className="editorSectionTitle">{t("log.title")}</h2>
       {records.length === 0 ? (
-        <p className="logEmpty">No runs yet — clap twice to start one.</p>
+        <p className="logEmpty">{t("log.empty")}</p>
       ) : (
         <ul className="logList">
           {records.map((record) => (
@@ -22,8 +24,13 @@ export const ExecutionLogPanel = () => {
   );
 };
 
+const TIME_LOCALES = { en: "en-US", ko: "ko-KR" } as const;
+
 const LogEntry = ({ record }: { record: ExecutionRecord }) => {
-  const time = new Date(record.atEpochMs).toLocaleTimeString();
+  const language = useLanguage();
+  const time = new Date(record.atEpochMs).toLocaleTimeString(
+    TIME_LOCALES[language],
+  );
   const failures = record.outcomes.filter((outcome) => !outcome.success);
 
   return (
