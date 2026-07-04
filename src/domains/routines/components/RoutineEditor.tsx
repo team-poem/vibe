@@ -1,11 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 import { useT } from "../../../shared/i18n/LanguageContext";
-import type { MessageKey } from "../../../shared/i18n/messages";
 import { useArmedConfirm } from "../../../shared/useArmedConfirm";
-import { checkAccessibilityPermission, fetchInstalledApps } from "../api";
 import {
-  clampActionsToPreset,
+  checkAccessibilityPermission,
+  fetchDisplays,
+  fetchInstalledApps,
+} from "../api";
+import {
   derivePreset,
   hasAnyRegion,
   presetLabelKey,
@@ -14,29 +18,7 @@ import {
 } from "../layout";
 import type { LayoutPreset } from "../layout";
 import { actionLabel, actionValue, buildAction } from "../types";
-import type { Action, ActionKind, Region, Routine } from "../types";
-
-type ValidationResult = { ok: true } | { ok: false; reason: MessageKey };
-
-const checkIsDraftValid = (draft: Routine): ValidationResult => {
-  if (draft.name.trim() === "") {
-    return { ok: false, reason: "validation.nameEmpty" };
-  }
-  if (draft.actions.length === 0) {
-    return { ok: false, reason: "validation.actionsEmpty" };
-  }
-  for (const action of draft.actions) {
-    if (actionValue(action).trim() === "") {
-      return { ok: false, reason: "validation.valueEmpty" };
-    }
-    const isInvalidUrl =
-      action.type === "open-url" && !/^https?:\/\//.test(action.url);
-    if (isInvalidUrl) {
-      return { ok: false, reason: "validation.urlInvalid" };
-    }
-  }
-  return { ok: true };
-};
+import type { Action, ActionKind, DisplayInfo, Region, Routine } from "../types";
 
 interface RoutineEditorProps {
   routine: Routine;
@@ -59,41 +41,164 @@ export const RoutineEditor = ({
 }: RoutineEditorProps) => {
   const t = useT();
   const [draft, setDraft] = useState<Routine>(routine);
-  const [preset, setPreset] = useState<LayoutPreset>(() =>
-    derivePreset(routine.actions),
-  );
   const [selectedIndex, setSelectedIndex] = useState<number | null>(
     routine.actions.length > 0 ? 0 : null,
   );
-  const [validationError, setValidationError] = useState<MessageKey | null>(
-    null,
-  );
   const [savedFlash, setSavedFlash] = useState(false);
   const [installedApps, setInstalledApps] = useState<string[]>([]);
+  const [displays, setDisplays] = useState<DisplayInfo[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    async function loadInstalledApps() {
-      const apps = await fetchInstalledApps();
+    async function loadEditorContext() {
+      const [apps, connectedDisplays] = await Promise.all([
+        fetchInstalledApps(),
+        fetchDisplays(),
+      ]);
       if (!cancelled) {
         setInstalledApps(apps);
+        setDisplays(connectedDisplays);
       }
     }
-    void loadInstalledApps();
+    void loadEditorContext();
     return () => {
       cancelled = true;
     };
   }, []);
 
+  // Which display's canvas is being edited — pure view state; each
+  // action stores its own (display, region) target.
+  const [viewDisplayId, setViewDisplayId] = useState<number | null>(null);
+
+  const mainDisplayId = displays.find((d) => d.isMain)?.id ?? null;
+  const viewedDisplay =
+    displays.find((d) => d.id === viewDisplayId) ??
+    displays.find((d) => d.isMain) ??
+    displays[0] ??
+    null;
+
+  const targetDisplayOf = (action: Action): number | null =>
+    action.display ?? mainDisplayId;
+
+  const placedOnViewedDisplay = draft.actions
+    .map((action, index) => ({ action, index }))
+    .filter(
+      ({ action }) =>
+        Boolean(action.region) &&
+        (displays.length < 2 ||
+          targetDisplayOf(action) === (viewedDisplay?.id ?? mainDisplayId)),
+    );
+
+  // The split tab follows the viewed display: derived from what is placed
+  // there, and manual choices are remembered per display.
+  const [presetOverrides, setPresetOverrides] = useState<
+    Record<string, LayoutPreset>
+  >({});
+  const displayKey = String(viewedDisplay?.id ?? "main");
+  const preset =
+    presetOverrides[displayKey] ??
+    derivePreset(placedOnViewedDisplay.map(({ action }) => action));
+
+  const groupKeyOf = (action: Action): string =>
+    action.region
+      ? `${targetDisplayOf(action) ?? "m"}:${action.region}`
+      : "unplaced";
+
+  // Actions grouped by their (display, region) stack; order inside a group
+  // is the window stacking order (top = frontmost).
+  const actionGroups = (() => {
+    type Group = {
+      key: string;
+      label: string;
+      sortKey: number;
+      displayId: number | null;
+      items: { action: Action; index: number }[];
+    };
+    const list: Group[] = [];
+    const viewedId = viewedDisplay?.id ?? mainDisplayId;
+    draft.actions.forEach((action, index) => {
+      // The tab bar scopes the list: only this display's stacks are shown
+      // (unplaced actions always are).
+      if (
+        action.region &&
+        displays.length > 1 &&
+        targetDisplayOf(action) !== viewedId
+      ) {
+        return;
+      }
+      const key = groupKeyOf(action);
+      let group = list.find((g) => g.key === key);
+      if (!group) {
+        if (action.region) {
+          group = {
+            key,
+            label: t(regionLabelKey(action.region)),
+            sortKey: REGION_ORDER.indexOf(action.region),
+            displayId: targetDisplayOf(action),
+            items: [],
+          };
+        } else {
+          group = {
+            key,
+            label: t("editor.noPlacement"),
+            sortKey: Number.MAX_SAFE_INTEGER,
+            displayId: null,
+            items: [],
+          };
+        }
+        list.push(group);
+      }
+      group.items.push({ action, index });
+    });
+    list.sort((a, b) => a.sortKey - b.sortKey);
+    return list;
+  })();
+
+  const withTarget = (action: Action, region: Region | null): Action => {
+    const next = { ...action, region };
+    if (region !== null && viewedDisplay && !viewedDisplay.isMain) {
+      next.display = viewedDisplay.id;
+    } else {
+      delete next.display;
+    }
+    return next;
+  };
+
   const isDirty = JSON.stringify(draft) !== JSON.stringify(routine);
+
+  // Autosave: changes persist a moment after the last edit. The preset is
+  // a view; placements outside it are kept, not cleared.
+  useEffect(() => {
+    if (!isDirty || draft.name.trim() === "") {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void onSave(draft).then(() => {
+        setSavedFlash(true);
+        window.setTimeout(() => setSavedFlash(false), SAVED_FLASH_MS);
+      });
+    }, AUTOSAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, isDirty]);
 
   const updateActions = (actions: Action[]) => {
     setDraft({ ...draft, actions });
   };
 
   const handlePresetChange = (next: LayoutPreset) => {
-    setPreset(next);
-    setDraft({ ...draft, actions: clampActionsToPreset(draft.actions, next) });
+    setPresetOverrides((prev) => ({ ...prev, [displayKey]: next }));
+  };
+
+  const handleSelectAction = (index: number) => {
+    setSelectedIndex(index);
+    const action = draft.actions[index];
+    if (action?.region && displays.length > 1) {
+      const target = targetDisplayOf(action);
+      if (target !== null && target !== viewedDisplay?.id) {
+        setViewDisplayId(target);
+      }
+    }
   };
 
   const handleRegionClick = (region: Region) => {
@@ -104,19 +209,38 @@ export const RoutineEditor = ({
     if (!current) {
       return;
     }
-    const nextRegion = (current.region ?? null) === region ? null : region;
+    const alreadyHere =
+      (current.region ?? null) === region &&
+      targetDisplayOf(current) === (viewedDisplay?.id ?? mainDisplayId);
+    const nextRegion = alreadyHere ? null : region;
     updateActions(
       draft.actions.map((action, index) =>
-        index === selectedIndex ? { ...action, region: nextRegion } : action,
+        index === selectedIndex ? withTarget(action, nextRegion) : action,
       ),
     );
   };
 
-  const handleClearRegion = (index: number) => {
+  const handleRegionDrop = (region: Region, index: number) => {
+    if (!draft.actions[index]) {
+      return;
+    }
     updateActions(
       draft.actions.map((action, i) =>
-        i === index ? { ...action, region: null } : action,
+        i === index ? withTarget(action, region) : action,
       ),
+    );
+    setSelectedIndex(index);
+  };
+
+  const handleClearRegion = (index: number) => {
+    updateActions(
+      draft.actions.map((action, i) => {
+        if (i !== index) {
+          return action;
+        }
+        const { display: _display, ...rest } = action;
+        return { ...rest, region: null } as Action;
+      }),
     );
   };
 
@@ -131,25 +255,49 @@ export const RoutineEditor = ({
     setSelectedIndex(null);
   };
 
-  const handleMoveAction = (index: number, direction: -1 | 1) => {
-    const moved = moveAction(draft.actions, index, direction);
-    if (moved !== draft.actions) {
-      updateActions(moved);
-      setSelectedIndex(index + direction);
-    }
-  };
-
-  async function handleSave() {
-    const validation = checkIsDraftValid(draft);
-    if (!validation.ok) {
-      setValidationError(validation.reason);
+  /// Dropping a card onto another card moves it into that card's stack
+  /// (same region and display) at that position.
+  const handleReorderDrop = (from: number, to: number) => {
+    if (from === to || !draft.actions[from] || !draft.actions[to]) {
       return;
     }
-    setValidationError(null);
-    await onSave(draft);
-    setSavedFlash(true);
-    window.setTimeout(() => setSavedFlash(false), SAVED_FLASH_MS);
-  }
+    const target = draft.actions[to];
+    const next = [...draft.actions];
+    const [taken] = next.splice(from, 1);
+    const moved = { ...taken, region: target.region ?? null };
+    if (target.region && target.display !== undefined) {
+      moved.display = target.display;
+    } else {
+      delete moved.display;
+    }
+    const insertAt = from < to ? to - 1 : to;
+    next.splice(insertAt, 0, moved);
+    updateActions(next);
+    setSelectedIndex(insertAt);
+  };
+
+  /// Swap an action with its neighbor inside the same (display, region)
+  /// stack — ordering across different regions is meaningless.
+  const handleMoveAction = (index: number, direction: -1 | 1) => {
+    const current = draft.actions[index];
+    if (!current) {
+      return;
+    }
+    const key = groupKeyOf(current);
+    const siblings = draft.actions
+      .map((action, i) => ({ action, i }))
+      .filter(({ action }) => groupKeyOf(action) === key)
+      .map(({ i }) => i);
+    const position = siblings.indexOf(index);
+    const swapWith = siblings[position + direction];
+    if (swapWith === undefined) {
+      return;
+    }
+    const next = [...draft.actions];
+    [next[index], next[swapWith]] = [next[swapWith], next[index]];
+    updateActions(next);
+    setSelectedIndex(swapWith);
+  };
 
   async function handleActivateToggle() {
     await onActivate(isActive ? null : routine.id);
@@ -168,96 +316,152 @@ export const RoutineEditor = ({
         <ActiveToggle isActive={isActive} onToggle={handleActivateToggle} />
       </div>
 
-      <div className="canvas">
-        <div className="segmented presetBar" role="group" aria-label="Layout preset">
-          {(Object.keys(PRESET_REGIONS) as LayoutPreset[]).map((option) => (
+      {displays.length > 1 && (
+        <div className="displayTabs segmented" role="tablist">
+          {displays.map((display, order) => (
             <button
-              key={option}
+              key={display.id}
               type="button"
+              role="tab"
+              aria-selected={display.id === viewedDisplay?.id}
               className={
-                option === preset ? "segmentedItem on" : "segmentedItem"
+                display.id === viewedDisplay?.id
+                  ? "segmentedItem on"
+                  : "segmentedItem"
               }
-              onClick={() => handlePresetChange(option)}
+              onClick={() => setViewDisplayId(display.id)}
             >
-              {t(presetLabelKey(option))}
+              {t("editor.display")} {order + 1}
             </button>
           ))}
         </div>
-        <MonitorMockup
-          preset={preset}
-          actions={draft.actions}
-          selectedIndex={selectedIndex}
-          onRegionClick={handleRegionClick}
-        />
-        <p className="canvasGuide">{t("editor.layoutHint")}</p>
-      </div>
-      <PlacementPermissionHint needed={hasAnyRegion(draft.actions)} />
+      )}
 
-      <h2 className="editorSectionTitle">{t("editor.actions")}</h2>
-      <p className="editorHint">{t("editor.actionsHint")}</p>
-
-      <datalist id="installed-apps">
-        {installedApps.map((app) => (
-          <option key={app} value={app} />
-        ))}
-      </datalist>
-
-      <div className="actionCards">
-        {draft.actions.map((action, index) => (
-          <ActionCard
-            key={index}
-            action={action}
-            index={index}
-            total={draft.actions.length}
-            isSelected={index === selectedIndex}
-            onSelect={() => setSelectedIndex(index)}
-            onChange={(next) =>
-              updateActions(
-                draft.actions.map((a, i) => (i === index ? next : a)),
-              )
-            }
-            onClearRegion={() => handleClearRegion(index)}
-            onMove={(direction) => handleMoveAction(index, direction)}
-            onRemove={() => handleRemoveAction(index)}
+      <div className="editorBody">
+        <div className="canvas">
+          {displays.length > 1 && (
+            <DisplayArrangement
+              displays={displays}
+              selectedId={viewedDisplay?.id ?? null}
+              onPick={(display) => setViewDisplayId(display.id)}
+            />
+          )}
+          <div
+            className="segmented presetBar"
+            role="group"
+            aria-label="Layout preset"
+          >
+            {(Object.keys(PRESET_REGIONS) as LayoutPreset[]).map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={
+                  option === preset ? "segmentedItem on" : "segmentedItem"
+                }
+                onClick={() => handlePresetChange(option)}
+              >
+                {t(presetLabelKey(option))}
+              </button>
+            ))}
+          </div>
+          <MonitorMockup
+            preset={preset}
+            placed={placedOnViewedDisplay}
+            selectedIndex={selectedIndex}
+            display={viewedDisplay}
+            onRegionClick={handleRegionClick}
+            onRegionDrop={handleRegionDrop}
+            onRegionClear={handleClearRegion}
+            onMoveAction={handleMoveAction}
+            onChipSelect={handleSelectAction}
           />
-        ))}
-      </div>
+          <p className="canvasGuide">{t("editor.layoutHint")}</p>
+          <PlacementPermissionHint needed={hasAnyRegion(draft.actions)} />
+        </div>
 
-      <div className="addActionRow">
-        <button
-          type="button"
-          className="ghostButton"
-          onClick={() => handleAddAction("open-app")}
-        >
-          {t("editor.addApp")}
-        </button>
-        <button
-          type="button"
-          className="ghostButton"
-          onClick={() => handleAddAction("open-url")}
-        >
-          {t("editor.addUrl")}
-        </button>
-      </div>
+        <div className="actionsColumn">
+          <h2 className="editorSectionTitle">{t("editor.actions")}</h2>
+          <p className="editorHint">{t("editor.actionsHint")}</p>
 
-      {validationError && <p className="editorError">{t(validationError)}</p>}
+          <datalist id="installed-apps">
+            {installedApps.map((app) => (
+              <option key={app} value={app} />
+            ))}
+          </datalist>
+
+          <div className="actionCards">
+            {actionGroups.map((group) => (
+              <div key={group.key} className="actionGroup">
+                <h3 className="actionGroupTitle">
+                  {group.label}
+                  {group.items.length > 1 && (
+                    <span className="actionGroupCount">
+                      {group.items.length}
+                    </span>
+                  )}
+                </h3>
+                {group.items.map(({ action, index }, stackPos) => (
+                  <ActionCard
+                    key={index}
+                    action={action}
+                    index={index}
+                    stackPos={stackPos}
+                    stackSize={group.items.length}
+                    isSelected={index === selectedIndex}
+                    onSelect={() => handleSelectAction(index)}
+                    onChange={(next) =>
+                      updateActions(
+                        draft.actions.map((a, i) => (i === index ? next : a)),
+                      )
+                    }
+                    onClearRegion={() => handleClearRegion(index)}
+                    onMove={(direction) => handleMoveAction(index, direction)}
+                    onRemove={() => handleRemoveAction(index)}
+                    onReorderTo={(from) => handleReorderDrop(from, index)}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <div className="addActionRow">
+            <button
+              type="button"
+              className="ghostButton"
+              onClick={() => handleAddAction("open-app")}
+            >
+              {t("editor.addApp")}
+            </button>
+            <button
+              type="button"
+              className="ghostButton"
+              onClick={() => handleAddAction("open-url")}
+            >
+              {t("editor.addUrl")}
+            </button>
+            <button
+              type="button"
+              className="ghostButton"
+              onClick={() => handleAddAction("open-file")}
+            >
+              {t("editor.addFile")}
+            </button>
+          </div>
+        </div>
+      </div>
 
       <footer className="editorFooter">
         <DeleteRoutineButton onDelete={() => onDelete(routine.id)} />
-        <button
-          type="button"
-          className="primaryButton"
-          onClick={handleSave}
-          disabled={!isDirty && !savedFlash}
-        >
-          {savedFlash ? t("editor.saved") : t("editor.save")}
-        </button>
+        <span className={savedFlash ? "autosaveNote on" : "autosaveNote"}>
+          ✓ {t("editor.saved")}
+        </span>
       </footer>
     </section>
   );
 };
 
-const SAVED_FLASH_MS = 1500;
+const SAVED_FLASH_MS = 1400;
+const AUTOSAVE_DELAY_MS = 600;
 
 /// Deleting is two-step: the first click arms the button, the second
 /// within a few seconds actually deletes.
@@ -296,43 +500,106 @@ const ActiveToggle = ({
   );
 };
 
-interface MonitorMockupProps {
-  preset: LayoutPreset;
-  actions: Action[];
-  selectedIndex: number | null;
-  onRegionClick: (region: Region) => void;
+const DRAG_ACTION_MIME = "text/plain";
+
+const REGION_ORDER: Region[] = [
+  "full",
+  "left-half",
+  "right-half",
+  "left-third",
+  "center-third",
+  "right-third",
+  "top-left",
+  "top-right",
+  "bottom-left",
+  "bottom-right",
+];
+
+interface PlacedAction {
+  action: Action;
+  index: number;
 }
 
-/// Interactive miniature display: every region (and the full-screen strip
-/// below it) is a click target that places the selected action.
+interface MonitorMockupProps {
+  preset: LayoutPreset;
+  placed: PlacedAction[];
+  selectedIndex: number | null;
+  display: DisplayInfo | null;
+  onRegionClick: (region: Region) => void;
+  onRegionDrop: (region: Region, actionIndex: number) => void;
+  onRegionClear: (actionIndex: number) => void;
+  onMoveAction: (actionIndex: number, direction: -1 | 1) => void;
+  onChipSelect: (actionIndex: number) => void;
+}
+
+/// Interactive miniature display: regions (and the full-screen strip below)
+/// accept both a click on the selected action and a dragged action card.
 const MonitorMockup = ({
   preset,
-  actions,
+  placed,
   selectedIndex,
+  display,
   onRegionClick,
+  onRegionDrop,
+  onRegionClear,
+  onMoveAction,
+  onChipSelect,
 }: MonitorMockupProps) => {
   const t = useT();
-  const indexed = actions.map((action, index) => ({ action, index }));
-  const fullScreen = indexed.filter(({ action }) => action.region === "full");
+  const [dragOverRegion, setDragOverRegion] = useState<Region | null>(null);
+
+  const dropHandlers = (region: Region) => ({
+    onDragOver: (event: React.DragEvent) => {
+      event.preventDefault();
+      setDragOverRegion(region);
+    },
+    onDragLeave: () => setDragOverRegion(null),
+    onDrop: (event: React.DragEvent) => {
+      event.preventDefault();
+      setDragOverRegion(null);
+      const index = Number(event.dataTransfer.getData(DRAG_ACTION_MIME));
+      if (!Number.isNaN(index)) {
+        onRegionDrop(region, index);
+      }
+    },
+  });
+
+  const ratio = display ? display.width / display.height : 1.6;
 
   return (
     <div className="monitor">
-      <div className={`monitorScreen preset-${preset}`}>
+      <div
+        className={`monitorScreen preset-${preset}`}
+        style={
+          {
+            "--monitor-ratio": display
+              ? `${display.width} / ${display.height}`
+              : "16 / 10",
+            "--monitor-ratio-num": String(ratio),
+          } as React.CSSProperties
+        }
+      >
         {PRESET_REGIONS[preset].map((region) => {
-          const assigned = indexed.filter(
+          const assigned = placed.filter(
             ({ action }) => action.region === region,
           );
-          const className =
-            assigned.length > 0 ? "monitorCell filled" : "monitorCell";
+          const classNames = ["monitorCell"];
+          if (assigned.length > 0) {
+            classNames.push("filled");
+          }
+          if (dragOverRegion === region) {
+            classNames.push("dragOver");
+          }
           return (
-            <button
+            <div
               key={region}
-              type="button"
-              className={className}
+              role="button"
+              className={classNames.join(" ")}
               onClick={() => onRegionClick(region)}
+              {...dropHandlers(region)}
             >
               {assigned.length > 0 ? (
-                assigned.map(({ action, index }) => (
+                assigned.map(({ action, index }, stackPos) => (
                   <span
                     key={index}
                     className={
@@ -340,8 +607,67 @@ const MonitorMockup = ({
                         ? "monitorChip selected"
                         : "monitorChip"
                     }
+                    draggable
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onChipSelect(index);
+                    }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onDragStart={(event) => {
+                      event.stopPropagation();
+                      event.dataTransfer.setData(
+                        DRAG_ACTION_MIME,
+                        String(index),
+                      );
+                      event.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDragEnd={(event) => {
+                      if (event.dataTransfer.dropEffect === "none") {
+                        onRegionClear(index);
+                      }
+                    }}
                   >
-                    {actionLabel(action)}
+                    {assigned.length > 1 && (
+                      <span className="chipOrder">{stackPos + 1}</span>
+                    )}
+                    <span className="chipLabel">{actionLabel(action)}</span>
+                    <span className="chipControls">
+                      <button
+                        type="button"
+                        className="chipBtn"
+                        aria-label="Bring forward"
+                        disabled={stackPos === 0}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onMoveAction(index, -1);
+                        }}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="chipBtn"
+                        aria-label="Send back"
+                        disabled={stackPos === assigned.length - 1}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onMoveAction(index, 1);
+                        }}
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        className="chipBtn"
+                        aria-label="Remove placement"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onRegionClear(index);
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </span>
                   </span>
                 ))
               ) : (
@@ -349,28 +675,68 @@ const MonitorMockup = ({
                   {t(regionLabelKey(region))}
                 </span>
               )}
-            </button>
+            </div>
           );
         })}
       </div>
       <div className="monitorStand" />
-      <button
-        type="button"
-        className={fullScreen.length > 0 ? "fullTarget filled" : "fullTarget"}
-        onClick={() => onRegionClick("full")}
-      >
-        <span className="fullTargetLabel">{t("region.full")}</span>
-        {fullScreen.map(({ action, index }) => (
-          <span
-            key={index}
-            className={
-              index === selectedIndex ? "monitorChip selected" : "monitorChip"
-            }
+    </div>
+  );
+};
+
+const ARRANGEMENT_MAX_WIDTH = 200;
+const ARRANGEMENT_MAX_HEIGHT = 64;
+
+/// Miniature of the real display arrangement (like macOS display settings);
+/// click a display to aim the routine's layout at it. The main display
+/// carries a menu-bar strip.
+const DisplayArrangement = ({
+  displays,
+  selectedId,
+  onPick,
+}: {
+  displays: DisplayInfo[];
+  selectedId: number | null;
+  onPick: (display: DisplayInfo) => void;
+}) => {
+  const minX = Math.min(...displays.map((d) => d.x));
+  const minY = Math.min(...displays.map((d) => d.y));
+  const maxX = Math.max(...displays.map((d) => d.x + d.width));
+  const maxY = Math.max(...displays.map((d) => d.y + d.height));
+  const scale = Math.min(
+    ARRANGEMENT_MAX_WIDTH / (maxX - minX),
+    ARRANGEMENT_MAX_HEIGHT / (maxY - minY),
+  );
+
+  return (
+    <div
+      className="displayArrangement"
+      style={{
+        width: (maxX - minX) * scale,
+        height: (maxY - minY) * scale,
+      }}
+    >
+      {displays.map((display, order) => {
+        const isSelected =
+          selectedId === display.id || (selectedId === null && display.isMain);
+        return (
+          <button
+            key={display.id}
+            type="button"
+            className={isSelected ? "displayRect selected" : "displayRect"}
+            style={{
+              left: (display.x - minX) * scale,
+              top: (display.y - minY) * scale,
+              width: display.width * scale,
+              height: display.height * scale,
+            }}
+            onClick={() => onPick(display)}
           >
-            {actionLabel(action)}
-          </span>
-        ))}
-      </button>
+            {display.isMain && <span className="displayMenubar" />}
+            <span className="displayNum">{order + 1}</span>
+          </button>
+        );
+      })}
     </div>
   );
 };
@@ -421,32 +787,77 @@ const ACTION_KINDS: ActionKind[] = ["open-app", "open-url"];
 interface ActionCardProps {
   action: Action;
   index: number;
-  total: number;
+  stackPos: number;
+  stackSize: number;
   isSelected: boolean;
   onSelect: () => void;
   onChange: (action: Action) => void;
   onClearRegion: () => void;
   onMove: (direction: -1 | 1) => void;
   onRemove: () => void;
+  onReorderTo: (fromIndex: number) => void;
 }
 
 const ActionCard = ({
   action,
   index,
-  total,
+  stackPos,
+  stackSize,
   isSelected,
   onSelect,
   onChange,
   onClearRegion,
   onMove,
   onRemove,
+  onReorderTo,
 }: ActionCardProps) => {
   const t = useT();
-  const className = isSelected ? "actionCard selected" : "actionCard";
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [isDragTarget, setIsDragTarget] = useState(false);
+
+  // Keep the selected card visible — monitor-side interactions select
+  // actions that may be scrolled out of view.
+  useEffect(() => {
+    if (isSelected) {
+      cardRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [isSelected, index]);
+
+  const classNames = ["actionCard"];
+  if (isSelected) {
+    classNames.push("selected");
+  }
+  if (isDragTarget) {
+    classNames.push("dragTarget");
+  }
 
   return (
-    <div className={className} onClick={onSelect}>
-      <span className="actionIndex">{index + 1}</span>
+    <div
+      ref={cardRef}
+      className={classNames.join(" ")}
+      onClick={onSelect}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData(DRAG_ACTION_MIME, String(index));
+        event.dataTransfer.effectAllowed = "move";
+        onSelect();
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        setIsDragTarget(true);
+      }}
+      onDragLeave={() => setIsDragTarget(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setIsDragTarget(false);
+        const from = Number(event.dataTransfer.getData(DRAG_ACTION_MIME));
+        if (!Number.isNaN(from)) {
+          onReorderTo(from);
+        }
+      }}
+    >
+      <span className="actionIndex">{stackPos + 1}</span>
       <select
         className="actionKindSelect"
         value={action.type}
@@ -475,10 +886,37 @@ const ActionCard = ({
         list={action.type === "open-app" ? "installed-apps" : undefined}
         onChange={(event) =>
           onChange(
-            buildAction(action.type, event.target.value, action.region ?? null),
+            buildAction(
+              action.type,
+              event.target.value,
+              action.region ?? null,
+              action.display ?? null,
+            ),
           )
         }
       />
+      {action.type === "open-file" && (
+        <button
+          type="button"
+          className="ghostButton browseButton"
+          onClick={async (event) => {
+            event.stopPropagation();
+            const picked = await openFileDialog({ multiple: false });
+            if (typeof picked === "string") {
+              onChange(
+                buildAction(
+                  "open-file",
+                  picked,
+                  action.region ?? null,
+                  action.display ?? null,
+                ),
+              );
+            }
+          }}
+        >
+          {t("editor.browse")}
+        </button>
+      )}
       {action.region ? (
         <button
           type="button"
@@ -498,7 +936,7 @@ const ActionCard = ({
         <button
           type="button"
           className="iconButton"
-          disabled={index === 0}
+          disabled={stackPos === 0}
           onClick={(event) => {
             event.stopPropagation();
             onMove(-1);
@@ -510,7 +948,7 @@ const ActionCard = ({
         <button
           type="button"
           className="iconButton"
-          disabled={index === total - 1}
+          disabled={stackPos === stackSize - 1}
           onClick={(event) => {
             event.stopPropagation();
             onMove(1);
@@ -535,12 +973,3 @@ const ActionCard = ({
   );
 };
 
-const moveAction = (actions: Action[], index: number, direction: -1 | 1) => {
-  const target = index + direction;
-  if (target < 0 || target >= actions.length) {
-    return actions;
-  }
-  const next = [...actions];
-  [next[index], next[target]] = [next[target], next[index]];
-  return next;
-};

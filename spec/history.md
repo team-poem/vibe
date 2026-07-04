@@ -1077,3 +1077,51 @@ Performance Pass, 다중 모니터.
 
 - v0.1.0 GitHub Release (dmg 업로드) + main 머지.
 - 백로그: 감도 설정, 다중 모니터, 서명/공증 빌드.
+## 2026-07-05 (feat/placement-engine)
+
+### 변경
+
+- `Action` 에 `OpenFile` 변형 추가. 기본 앱으로 문서를 열고, 배치 시 System
+  Events 로 최전면 프로세스 pid 를 조회해 해당 앞창을 스냅.
+- 디스플레이 타깃을 액션 단위로 이동 (`Action.display: Option<u32>`). 루틴
+  단위 타깃 제거. `list_displays` 커맨드가 CGDisplay 지오메트리(위치·크기·
+  메인 여부) 제공.
+- 배치 프레임을 NSScreen `visibleFrame`(메뉴바·Dock 제외) 기준으로 전환.
+  Cocoa 좌표를 top-left 로 변환, CGDisplayBounds 와 프레임 대조로 스크린 매칭.
+- 동일 (display, region) 의 URL 들을 Chrome `--new-window url…` 한 번으로
+  묶어 창 하나(탭 N개)로 배치.
+- 실행 종료 시 관련 앱을 목록 역순으로 재활성화 — 스택 첫 항목이 최전면
+  (`restack_frontmost_first`).
+- `tauri-plugin-dialog` 등록, `list_installed_apps` 커맨드 추가.
+- 의존성 추가: objc2, objc2-app-kit(NSScreen), objc2-foundation,
+  tauri-plugin-dialog.
+
+### 검증
+
+- cargo test 55개 통과, clippy `-D warnings` 클린.
+- 라이브: 듀얼 모니터 개별 배치, 문서 열기+배치, URL 탭 묶기, 스택 순서 확인.
+
+## 2026-07-05 (feat/canvas-editor)
+
+### 변경
+
+- 편집기 2컬럼 재배치(좌 모니터 캔버스 / 우 액션 리스트), 기본 창 1080×780.
+- 상단 모니터 탭 바로 디스플레이 전환. 미니맵은 실제 배치의 축소판, 목업
+  비율은 선택 디스플레이의 실제 비율을 따름.
+- 드래그앤드롭: 액션 카드→영역 드롭 배치, 칩의 영역 간 이동, 캔버스 밖 드롭
+  시 배치 해제. 창 설정 `dragDropEnabled: false` 로 WebKit HTML5 DnD 활성화
+  (기본값은 네이티브 파일 드롭이 이벤트를 가로챔).
+- 자동 저장(0.6s 디바운스)으로 저장 버튼 대체. 분할 프리셋은 뷰 상태로 전환
+  — 프리셋을 바꿔도 배치가 보존되고, 선택은 디스플레이별로 기억.
+- 1분할 프리셋 추가, 별도 "전체 화면" 타깃 제거.
+- 액션 리스트를 (display, region) 스택 그룹으로 재편: 그룹 내 번호·↑↓,
+  카드를 다른 그룹 카드에 드롭하면 해당 그룹으로 이동. 칩에는 스택 번호와
+  hover/선택 시 ↑↓✕ 컨트롤, URL 라벨은 호스트명으로 축약.
+- 액션·칩 선택 시 해당 모니터로 뷰 전환, 선택 카드는 scrollIntoView 로 추적.
+- 문서 액션 UI(네이티브 파일 다이얼로그 찾아보기), 앱 이름 datalist 자동완성.
+- 배치 해제 경로 3종: 칩 ✕, 카드 배지 ✕, 캔버스 밖 드래그.
+
+### 검증
+
+- tsc + vite 빌드 통과.
+- 라이브 검수: 탭 전환, DnD 배치/이동/해제, 자동 저장, 스택 순서 조정.

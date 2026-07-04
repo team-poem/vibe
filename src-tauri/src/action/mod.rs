@@ -21,11 +21,23 @@ pub enum Action {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Region>,
+        /// Display the region maps onto; `None` = main display.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<u32>,
     },
     OpenUrl {
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Region>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<u32>,
+    },
+    OpenFile {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<Region>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<u32>,
     },
 }
 
@@ -34,6 +46,7 @@ impl Action {
         Self::OpenApp {
             name: name.into(),
             region: None,
+            display: None,
         }
     }
 
@@ -41,6 +54,15 @@ impl Action {
         Self::OpenUrl {
             url: url.into(),
             region: None,
+            display: None,
+        }
+    }
+
+    pub fn open_file(path: impl Into<String>) -> Self {
+        Self::OpenFile {
+            path: path.into(),
+            region: None,
+            display: None,
         }
     }
 
@@ -48,18 +70,29 @@ impl Action {
         match self {
             Self::OpenApp { .. } => "open-app",
             Self::OpenUrl { .. } => "open-url",
+            Self::OpenFile { .. } => "open-file",
         }
     }
 
     pub fn region(&self) -> Option<Region> {
         match self {
-            Self::OpenApp { region, .. } | Self::OpenUrl { region, .. } => *region,
+            Self::OpenApp { region, .. }
+            | Self::OpenUrl { region, .. }
+            | Self::OpenFile { region, .. } => *region,
+        }
+    }
+
+    pub fn display(&self) -> Option<u32> {
+        match self {
+            Self::OpenApp { display, .. }
+            | Self::OpenUrl { display, .. }
+            | Self::OpenFile { display, .. } => *display,
         }
     }
 
     pub(crate) fn program(&self) -> &'static str {
         match self {
-            Self::OpenApp { .. } | Self::OpenUrl { .. } => "open",
+            Self::OpenApp { .. } | Self::OpenUrl { .. } | Self::OpenFile { .. } => "open",
         }
     }
 
@@ -67,6 +100,7 @@ impl Action {
         match self {
             Self::OpenApp { name, .. } => vec!["-a", name.as_str()],
             Self::OpenUrl { url, .. } => vec![url.as_str()],
+            Self::OpenFile { path, .. } => vec![path.as_str()],
         }
     }
 }
@@ -76,6 +110,13 @@ impl fmt::Display for Action {
         match self {
             Self::OpenApp { name, .. } => write!(f, "open-app({name})"),
             Self::OpenUrl { url, .. } => write!(f, "open-url({url})"),
+            Self::OpenFile { path, .. } => {
+                let file_name = std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_else(|| path.as_str().into());
+                write!(f, "open-file({file_name})")
+            }
         }
     }
 }
