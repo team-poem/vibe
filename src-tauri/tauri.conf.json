@@ -13,8 +13,11 @@
     "windows": [
       {
         "title": "V.I.B.E",
-        "width": 800,
-        "height": 600,
+        "width": 1080,
+        "height": 780,
+        "minWidth": 940,
+        "minHeight": 680,
+        "dragDropEnabled": false,
         "visible": false
       }
     ],

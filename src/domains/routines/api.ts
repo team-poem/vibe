@@ -2,7 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { Language } from "../../shared/i18n/messages";
 import type { ThemeSetting } from "../../shared/theme";
-import type { ExecutionRecord, Routine, RoutineConfig } from "./types";
+import type {
+  DisplayInfo,
+  ExecutionRecord,
+  Routine,
+  RoutineConfig,
+} from "./types";
 
 export async function fetchRoutineConfig(): Promise<RoutineConfig> {
   return invoke<RoutineConfig>("list_routines");
@@ -63,6 +68,11 @@ export async function setAutostartInSystem(enabled: boolean): Promise<boolean> {
 /// first use. Resolves to the device name.
 export async function testMicrophone(): Promise<string> {
   return invoke<string>("test_microphone");
+}
+
+/// Connected displays in global coordinates, for the arrangement picker.
+export async function fetchDisplays(): Promise<DisplayInfo[]> {
+  return invoke<DisplayInfo[]>("list_displays");
 }
 
 /// Installed application names, for the app-name autocomplete.
