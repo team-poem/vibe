@@ -8,6 +8,7 @@ A macOS menu bar app that turns a double clap into your work setup:
 your apps launch, your tabs open, and every window lands in the
 screen layout you designed.
 
+[![Release](https://img.shields.io/github/v/release/team-poem/vibe?color=e8531f)](https://github.com/team-poem/vibe/releases/latest)
 ![macOS](https://img.shields.io/badge/platform-macOS-black?logo=apple)
 ![Tauri](https://img.shields.io/badge/Tauri_2-Rust-24C8DB?logo=tauri&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -35,7 +36,8 @@ into one gesture you always have with you.
 
 ## Install
 
-Grab the latest `.dmg` from [Releases](https://github.com/team-poem/vibe/releases)
+Grab the latest `.dmg` from the
+[**latest release**](https://github.com/team-poem/vibe/releases/latest)
 and drag **V.I.B.E** into Applications.
 
 - Apple Silicon only, for now.
