@@ -1,3 +1,5 @@
+import { useLanguage, useT } from "../../../shared/i18n/LanguageContext";
+import type { Language } from "../../../shared/i18n/messages";
 import type { Routine } from "../types";
 
 interface RoutineSidebarProps {
@@ -6,6 +8,7 @@ interface RoutineSidebarProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onCreate: () => void;
+  onChangeLanguage: (language: Language) => void;
 }
 
 export const RoutineSidebar = ({
@@ -14,12 +17,15 @@ export const RoutineSidebar = ({
   selectedId,
   onSelect,
   onCreate,
+  onChangeLanguage,
 }: RoutineSidebarProps) => {
+  const t = useT();
+
   return (
     <aside className="sidebar">
       <header className="brand">
         <h1 className="brandName">V.I.B.E</h1>
-        <p className="brandTagline">Clap twice. Your setup appears.</p>
+        <p className="brandTagline">{t("sidebar.tagline")}</p>
       </header>
 
       <nav className="routineList" aria-label="Routines">
@@ -33,13 +39,14 @@ export const RoutineSidebar = ({
           />
         ))}
         {routines.length === 0 && (
-          <p className="routineListEmpty">No routines yet.</p>
+          <p className="routineListEmpty">{t("sidebar.empty")}</p>
         )}
       </nav>
 
       <button type="button" className="ghostButton newRoutine" onClick={onCreate}>
-        + New routine
+        {t("sidebar.new")}
       </button>
+      <LanguageSwitch onChange={onChangeLanguage} />
     </aside>
   );
 };
@@ -57,6 +64,7 @@ const RoutineListItem = ({
   isSelected,
   onSelect,
 }: RoutineListItemProps) => {
+  const t = useT();
   const className = isSelected ? "routineItem selected" : "routineItem";
 
   return (
@@ -66,7 +74,39 @@ const RoutineListItem = ({
       onClick={() => onSelect(routine.id)}
     >
       <span className="routineItemName">{routine.name}</span>
-      {isActive && <span className="activeDot" title="Active routine" />}
+      {isActive && (
+        <span className="activeDot" title={t("sidebar.activeRoutine")} />
+      )}
     </button>
+  );
+};
+
+const LANGUAGE_OPTIONS: { value: Language; label: string }[] = [
+  { value: "en", label: "EN" },
+  { value: "ko", label: "한국어" },
+];
+
+const LanguageSwitch = ({
+  onChange,
+}: {
+  onChange: (language: Language) => void;
+}) => {
+  const current = useLanguage();
+
+  return (
+    <div className="langSwitch" role="group" aria-label="Language">
+      {LANGUAGE_OPTIONS.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={
+            option.value === current ? "langButton on" : "langButton"
+          }
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
   );
 };

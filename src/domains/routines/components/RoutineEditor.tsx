@@ -1,36 +1,38 @@
 import { useEffect, useState } from "react";
 
+import { useT } from "../../../shared/i18n/LanguageContext";
+import type { MessageKey } from "../../../shared/i18n/messages";
 import { checkAccessibilityPermission } from "../api";
 import {
   clampActionsToPreset,
   derivePreset,
   hasAnyRegion,
-  PRESET_LABELS,
+  presetLabelKey,
   PRESET_REGIONS,
-  REGION_LABELS,
+  regionLabelKey,
   selectableRegions,
 } from "../layout";
 import type { LayoutPreset } from "../layout";
 import { actionLabel, actionValue, buildAction } from "../types";
 import type { Action, ActionKind, Region, Routine } from "../types";
 
-type ValidationResult = { ok: true } | { ok: false; reason: string };
+type ValidationResult = { ok: true } | { ok: false; reason: MessageKey };
 
 const checkIsDraftValid = (draft: Routine): ValidationResult => {
   if (draft.name.trim() === "") {
-    return { ok: false, reason: "Routine name cannot be empty." };
+    return { ok: false, reason: "validation.nameEmpty" };
   }
   if (draft.actions.length === 0) {
-    return { ok: false, reason: "Add at least one action." };
+    return { ok: false, reason: "validation.actionsEmpty" };
   }
   for (const action of draft.actions) {
     if (actionValue(action).trim() === "") {
-      return { ok: false, reason: "Every action needs a value." };
+      return { ok: false, reason: "validation.valueEmpty" };
     }
     const isInvalidUrl =
       action.type === "open-url" && !/^https?:\/\//.test(action.url);
     if (isInvalidUrl) {
-      return { ok: false, reason: "URLs must start with http:// or https://." };
+      return { ok: false, reason: "validation.urlInvalid" };
     }
   }
   return { ok: true };
@@ -53,11 +55,14 @@ export const RoutineEditor = ({
   onDelete,
   onActivate,
 }: RoutineEditorProps) => {
+  const t = useT();
   const [draft, setDraft] = useState<Routine>(routine);
   const [preset, setPreset] = useState<LayoutPreset>(() =>
     derivePreset(routine.actions),
   );
-  const [validationError, setValidationError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<MessageKey | null>(
+    null,
+  );
   const [savedFlash, setSavedFlash] = useState(false);
 
   const isDirty = JSON.stringify(draft) !== JSON.stringify(routine);
@@ -94,16 +99,14 @@ export const RoutineEditor = ({
           className="routineNameInput"
           value={draft.name}
           onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-          placeholder="Routine name"
+          placeholder={t("editor.namePlaceholder")}
           aria-label="Routine name"
         />
         <ActiveToggle isActive={isActive} onToggle={handleActivateToggle} />
       </div>
 
-      <h2 className="editorSectionTitle">Layout</h2>
-      <p className="editorHint">
-        Pick a split, then assign each action to a screen region.
-      </p>
+      <h2 className="editorSectionTitle">{t("editor.layout")}</h2>
+      <p className="editorHint">{t("editor.layoutHint")}</p>
       <div className="layoutSection">
         <div className="presetGroup" role="group" aria-label="Layout preset">
           {(Object.keys(PRESET_REGIONS) as LayoutPreset[]).map((option) => (
@@ -113,7 +116,7 @@ export const RoutineEditor = ({
               className={option === preset ? "presetButton on" : "presetButton"}
               onClick={() => handlePresetChange(option)}
             >
-              {PRESET_LABELS[option]}
+              {t(presetLabelKey(option))}
             </button>
           ))}
         </div>
@@ -121,8 +124,8 @@ export const RoutineEditor = ({
       </div>
       <PlacementPermissionHint needed={hasAnyRegion(draft.actions)} />
 
-      <h2 className="editorSectionTitle">Actions</h2>
-      <p className="editorHint">Run in order when you clap twice.</p>
+      <h2 className="editorSectionTitle">{t("editor.actions")}</h2>
+      <p className="editorHint">{t("editor.actionsHint")}</p>
 
       <div className="actionRows">
         {draft.actions.map((action, index) => (
@@ -153,7 +156,7 @@ export const RoutineEditor = ({
             updateActions([...draft.actions, buildAction("open-app", "")])
           }
         >
-          + Launch app
+          {t("editor.addApp")}
         </button>
         <button
           type="button"
@@ -162,11 +165,11 @@ export const RoutineEditor = ({
             updateActions([...draft.actions, buildAction("open-url", "")])
           }
         >
-          + Open URL
+          {t("editor.addUrl")}
         </button>
       </div>
 
-      {validationError && <p className="editorError">{validationError}</p>}
+      {validationError && <p className="editorError">{t(validationError)}</p>}
 
       <footer className="editorFooter">
         <button
@@ -174,7 +177,7 @@ export const RoutineEditor = ({
           className="dangerButton"
           onClick={() => onDelete(routine.id)}
         >
-          Delete
+          {t("editor.delete")}
         </button>
         <button
           type="button"
@@ -182,7 +185,7 @@ export const RoutineEditor = ({
           onClick={handleSave}
           disabled={!isDirty && !savedFlash}
         >
-          {savedFlash ? "Saved" : "Save"}
+          {savedFlash ? t("editor.saved") : t("editor.save")}
         </button>
       </footer>
     </section>
@@ -218,6 +221,7 @@ interface MonitorMockupProps {
 /// Miniature display, like the monitor in macOS display settings, showing
 /// which action lands in which region of the chosen split.
 const MonitorMockup = ({ preset, actions }: MonitorMockupProps) => {
+  const t = useT();
   const fullScreenActions = actions.filter((a) => a.region === "full");
 
   return (
@@ -236,7 +240,9 @@ const MonitorMockup = ({ preset, actions }: MonitorMockupProps) => {
                   </span>
                 ))
               ) : (
-                <span className="monitorCellHint">{REGION_LABELS[region]}</span>
+                <span className="monitorCellHint">
+                  {t(regionLabelKey(region))}
+                </span>
               )}
             </div>
           );
@@ -245,7 +251,7 @@ const MonitorMockup = ({ preset, actions }: MonitorMockupProps) => {
       <div className="monitorStand" />
       {fullScreenActions.length > 0 && (
         <p className="monitorFullNote">
-          Full screen: {fullScreenActions.map(actionLabel).join(", ")}
+          {t("editor.fullNote")} {fullScreenActions.map(actionLabel).join(", ")}
         </p>
       )}
     </div>
@@ -255,6 +261,7 @@ const MonitorMockup = ({ preset, actions }: MonitorMockupProps) => {
 /// Shown only when regions are assigned but macOS has not granted the
 /// Accessibility permission yet.
 const PlacementPermissionHint = ({ needed }: { needed: boolean }) => {
+  const t = useT();
   const [granted, setGranted] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -284,26 +291,15 @@ const PlacementPermissionHint = ({ needed }: { needed: boolean }) => {
 
   return (
     <div className="permissionHint">
-      <span>
-        Window placement needs the Accessibility permission — enable V.I.B.E in
-        System Settings.
-      </span>
+      <span>{t("permission.hint")}</span>
       <button type="button" className="ghostButton" onClick={handleEnableClick}>
-        Enable…
+        {t("permission.enable")}
       </button>
     </div>
   );
 };
 
-const ACTION_KIND_LABELS: Record<ActionKind, string> = {
-  "open-app": "Launch app",
-  "open-url": "Open URL",
-};
-
-const ACTION_PLACEHOLDERS: Record<ActionKind, string> = {
-  "open-app": "App name, e.g. Cursor",
-  "open-url": "https://…",
-};
+const ACTION_KINDS: ActionKind[] = ["open-app", "open-url"];
 
 interface ActionRowProps {
   action: Action;
@@ -324,6 +320,7 @@ const ActionRow = ({
   onMove,
   onRemove,
 }: ActionRowProps) => {
+  const t = useT();
   return (
     <div className="actionRow">
       <span className="actionIndex">{index + 1}</span>
@@ -337,16 +334,16 @@ const ActionRow = ({
           )
         }
       >
-        {Object.entries(ACTION_KIND_LABELS).map(([kind, label]) => (
+        {ACTION_KINDS.map((kind) => (
           <option key={kind} value={kind}>
-            {label}
+            {t(`action.kind.${kind}`)}
           </option>
         ))}
       </select>
       <input
         className="actionValueInput"
         value={actionValue(action)}
-        placeholder={ACTION_PLACEHOLDERS[action.type]}
+        placeholder={t(`action.placeholder.${action.type}`)}
         aria-label="Action value"
         onChange={(event) =>
           onChange(
@@ -365,10 +362,10 @@ const ActionRow = ({
           })
         }
       >
-        <option value="">No placement</option>
+        <option value="">{t("editor.noPlacement")}</option>
         {regionOptions.map((region) => (
           <option key={region} value={region}>
-            {REGION_LABELS[region]}
+            {t(regionLabelKey(region))}
           </option>
         ))}
       </select>

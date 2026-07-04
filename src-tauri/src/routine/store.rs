@@ -112,6 +112,16 @@ impl RoutineStore {
         Ok(config.clone())
     }
 
+    pub fn set_language(
+        &self,
+        language: crate::routine::Language,
+    ) -> Result<RoutineConfig, StoreError> {
+        let mut config = self.lock();
+        config.language = language;
+        self.save_locked(&config)?;
+        Ok(config.clone())
+    }
+
     /// Switch the active routine. `None` disables triggering entirely.
     pub fn set_active_routine(&self, id: Option<String>) -> Result<RoutineConfig, StoreError> {
         let mut config = self.lock();

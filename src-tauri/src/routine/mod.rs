@@ -8,6 +8,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
 
+/// UI language for both the webview and the tray menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    #[default]
+    En,
+    Ko,
+}
+
 /// A named, ordered list of actions the user triggers with a double clap.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Routine {
@@ -24,6 +33,8 @@ pub struct Routine {
 pub struct RoutineConfig {
     pub active_routine_id: Option<String>,
     pub routines: Vec<Routine>,
+    #[serde(default)]
+    pub language: Language,
 }
 
 impl RoutineConfig {
@@ -39,6 +50,7 @@ impl RoutineConfig {
         Self {
             active_routine_id: Some(sample.id.clone()),
             routines: vec![sample],
+            language: Language::default(),
         }
     }
 
@@ -72,5 +84,18 @@ mod tests {
         let json = serde_json::to_string(&config).expect("serialize");
         let back: RoutineConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(config, back);
+    }
+
+    #[test]
+    fn config_without_language_defaults_to_english() {
+        // Documents written before the language field existed must load.
+        let json = r#"{"activeRoutineId":null,"routines":[]}"#;
+        let config: RoutineConfig = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(config.language, Language::En);
+    }
+
+    #[test]
+    fn language_serializes_lowercase() {
+        assert_eq!(serde_json::to_string(&Language::Ko).unwrap(), "\"ko\"");
     }
 }

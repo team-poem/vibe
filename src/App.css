@@ -162,6 +162,34 @@ body {
   margin-top: 12px;
 }
 
+.langSwitch {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.langButton {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.langButton:hover {
+  background: var(--bg-hover);
+}
+
+.langButton.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .mainPane {
   display: flex;
   flex-direction: column;

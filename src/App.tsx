@@ -5,11 +5,18 @@ import { RoutineEditor } from "./domains/routines/components/RoutineEditor";
 import { RoutineSidebar } from "./domains/routines/components/RoutineSidebar";
 import { useRoutines } from "./domains/routines/useRoutines";
 import type { Routine } from "./domains/routines/types";
+import { LanguageProvider, useT } from "./shared/i18n/LanguageContext";
 import "./App.css";
 
 export default function App() {
-  const { config, error, saveRoutine, deleteRoutine, setActiveRoutine } =
-    useRoutines();
+  const {
+    config,
+    error,
+    saveRoutine,
+    deleteRoutine,
+    setActiveRoutine,
+    setLanguage,
+  } = useRoutines();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   if (!config) {
@@ -43,16 +50,18 @@ export default function App() {
   }
 
   return (
-    <main className="app">
-      <RoutineSidebar
-        routines={config.routines}
-        activeRoutineId={config.activeRoutineId}
-        selectedId={selectedRoutine?.id ?? null}
-        onSelect={setSelectedId}
-        onCreate={handleCreateRoutine}
-      />
+    <LanguageProvider language={config.language}>
+      <main className="app">
+        <RoutineSidebar
+          routines={config.routines}
+          activeRoutineId={config.activeRoutineId}
+          selectedId={selectedRoutine?.id ?? null}
+          onSelect={setSelectedId}
+          onCreate={handleCreateRoutine}
+          onChangeLanguage={setLanguage}
+        />
 
-      <div className="mainPane">
+        <div className="mainPane">
         {selectedRoutine ? (
           <RoutineEditor
             key={selectedRoutine.id}
@@ -62,14 +71,15 @@ export default function App() {
             onDelete={handleDeleteRoutine}
             onActivate={setActiveRoutine}
           />
-        ) : (
-          <EmptyEditorPane onCreate={handleCreateRoutine} />
-        )}
-        <ExecutionLogPanel />
-      </div>
+          ) : (
+            <EmptyEditorPane onCreate={handleCreateRoutine} />
+          )}
+          <ExecutionLogPanel />
+        </div>
 
-      {error && <p className="appError">{error}</p>}
-    </main>
+        {error && <p className="appError">{error}</p>}
+      </main>
+    </LanguageProvider>
   );
 }
 
@@ -80,11 +90,12 @@ const NEW_ROUTINE_TEMPLATE: Routine = {
 };
 
 const EmptyEditorPane = ({ onCreate }: { onCreate: () => Promise<void> }) => {
+  const t = useT();
   return (
     <section className="editor empty">
-      <p>Create a routine to run on a double clap.</p>
+      <p>{t("editor.empty")}</p>
       <button type="button" className="primaryButton" onClick={onCreate}>
-        + New routine
+        {t("sidebar.new")}
       </button>
     </section>
   );
