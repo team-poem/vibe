@@ -337,6 +337,8 @@ export const RoutineEditor = ({
         </div>
       )}
 
+      <PlacementPermissionHint needed={hasAnyRegion(draft.actions)} />
+
       <div className="editorBody">
         <div className="canvas">
           {displays.length > 1 && (
@@ -376,7 +378,6 @@ export const RoutineEditor = ({
             onChipSelect={handleSelectAction}
           />
           <p className="canvasGuide">{t("editor.layoutHint")}</p>
-          <PlacementPermissionHint needed={hasAnyRegion(draft.actions)} />
         </div>
 
         <div className="actionsColumn">
@@ -504,6 +505,7 @@ const DRAG_ACTION_MIME = "text/plain";
 
 const REGION_ORDER: Region[] = [
   "full",
+  "centered",
   "left-half",
   "right-half",
   "left-third",
@@ -680,6 +682,61 @@ const MonitorMockup = ({
         })}
       </div>
       <div className="monitorStand" />
+      <div
+        role="button"
+        className={[
+          "fullTarget",
+          placed.some(({ action }) => action.region === "centered")
+            ? "filled"
+            : "",
+          dragOverRegion === "centered" ? "dragOver" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        onClick={() => onRegionClick("centered")}
+        {...dropHandlers("centered")}
+      >
+        <span className="fullTargetLabel">{t("region.centered")}</span>
+        {placed
+          .filter(({ action }) => action.region === "centered")
+          .map(({ action, index }) => (
+            <span
+              key={index}
+              className={
+                index === selectedIndex ? "monitorChip selected" : "monitorChip"
+              }
+              draggable
+              onClick={(event) => {
+                event.stopPropagation();
+                onChipSelect(index);
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
+              onDragStart={(event) => {
+                event.stopPropagation();
+                event.dataTransfer.setData(DRAG_ACTION_MIME, String(index));
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDragEnd={(event) => {
+                if (event.dataTransfer.dropEffect === "none") {
+                  onRegionClear(index);
+                }
+              }}
+            >
+              <span className="chipLabel">{actionLabel(action)}</span>
+              <button
+                type="button"
+                className="chipBtn"
+                aria-label="Remove placement"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRegionClear(index);
+                }}
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+      </div>
     </div>
   );
 };
@@ -743,12 +800,16 @@ const DisplayArrangement = ({
 
 /// Shown only when regions are assigned but macOS has not granted the
 /// Accessibility permission yet.
+const PERMISSION_RECHECK_MS = 3000;
+
 const PlacementPermissionHint = ({ needed }: { needed: boolean }) => {
   const t = useT();
   const [granted, setGranted] = useState<boolean | null>(null);
 
+  // The user grants the permission in System Settings and comes back, so
+  // keep re-checking until it flips instead of testing only once.
   useEffect(() => {
-    if (!needed) {
+    if (!needed || granted === true) {
       return;
     }
     let cancelled = false;
@@ -759,10 +820,14 @@ const PlacementPermissionHint = ({ needed }: { needed: boolean }) => {
       }
     }
     void checkQuietly();
+    const timer = window.setInterval(checkQuietly, PERMISSION_RECHECK_MS);
+    window.addEventListener("focus", checkQuietly);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", checkQuietly);
     };
-  }, [needed]);
+  }, [needed, granted]);
 
   if (!needed || granted !== false) {
     return null;
