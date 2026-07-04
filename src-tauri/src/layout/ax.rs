@@ -8,7 +8,7 @@ use accessibility_sys::{
     kAXErrorSuccess, kAXPositionAttribute, kAXSizeAttribute, kAXTrustedCheckOptionPrompt,
     kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowsAttribute, AXIsProcessTrusted,
     AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-    AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate,
+    AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate, AXValueGetValue, AXValueRef,
 };
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFType, CFTypeRef, TCFType};
@@ -75,6 +75,28 @@ pub fn windows(app: &AxElement) -> Result<Vec<AxElement>, AxError> {
         result.push(AxElement(element_ref));
     }
     Ok(result)
+}
+
+/// Current size of a window, for move-without-resize placement.
+pub fn window_size(window: &AxElement) -> Option<CGSize> {
+    let value = copy_attribute(window, kAXSizeAttribute).ok()?;
+    let mut size = CGSize {
+        width: 0.0,
+        height: 0.0,
+    };
+    let ok = unsafe {
+        AXValueGetValue(
+            value.as_CFTypeRef() as AXValueRef,
+            kAXValueTypeCGSize,
+            &mut size as *mut _ as *mut c_void,
+        )
+    };
+    ok.then_some(size)
+}
+
+/// Move a window without touching its size.
+pub fn set_window_position(window: &AxElement, origin: CGPoint) -> Result<(), AxError> {
+    set_point(window, kAXPositionAttribute, origin)
 }
 
 /// How much of the requested frame a window actually accepted.
