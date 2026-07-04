@@ -1,3 +1,6 @@
+import type { Language } from "../../shared/i18n/messages";
+import type { ThemeSetting } from "../../shared/theme";
+
 export type Region =
   | "full"
   | "left-half"
@@ -11,8 +14,24 @@ export type Region =
   | "bottom-right";
 
 export type Action =
-  | { type: "open-app"; name: string; region?: Region | null }
-  | { type: "open-url"; url: string; region?: Region | null };
+  | {
+      type: "open-app";
+      name: string;
+      region?: Region | null;
+      display?: number | null;
+    }
+  | {
+      type: "open-url";
+      url: string;
+      region?: Region | null;
+      display?: number | null;
+    }
+  | {
+      type: "open-file";
+      path: string;
+      region?: Region | null;
+      display?: number | null;
+    };
 
 export type ActionKind = Action["type"];
 
@@ -22,8 +41,14 @@ export interface Routine {
   actions: Action[];
 }
 
-import type { Language } from "../../shared/i18n/messages";
-import type { ThemeSetting } from "../../shared/theme";
+export interface DisplayInfo {
+  id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isMain: boolean;
+}
 
 export interface RoutineConfig {
   activeRoutineId: string | null;
@@ -47,19 +72,44 @@ export interface ExecutionRecord {
 }
 
 export const actionValue = (action: Action): string => {
-  return action.type === "open-app" ? action.name : action.url;
+  switch (action.type) {
+    case "open-app":
+      return action.name;
+    case "open-url":
+      return action.url;
+    case "open-file":
+      return action.path;
+  }
 };
 
 export const actionLabel = (action: Action): string => {
-  return actionValue(action) || (action.type === "open-app" ? "app" : "url");
+  if (action.type === "open-file") {
+    return action.path.split("/").pop() || "file";
+  }
+  if (action.type === "open-url") {
+    try {
+      return new URL(action.url).hostname.replace(/^www\./, "");
+    } catch {
+      return action.url || "url";
+    }
+  }
+  return action.name || "app";
 };
 
 export const buildAction = (
   kind: ActionKind,
   value: string,
   region: Region | null = null,
+  display: number | null = null,
 ): Action => {
-  return kind === "open-app"
-    ? { type: "open-app", name: value, region }
-    : { type: "open-url", url: value, region };
+  const base: Action =
+    kind === "open-app"
+      ? { type: "open-app", name: value, region }
+      : kind === "open-url"
+        ? { type: "open-url", url: value, region }
+        : { type: "open-file", path: value, region };
+  if (display !== null) {
+    base.display = display;
+  }
+  return base;
 };
