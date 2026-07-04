@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import type { Language } from "../../shared/i18n/messages";
 import type { ExecutionRecord, Routine, RoutineConfig } from "./types";
 
 export async function fetchRoutineConfig(): Promise<RoutineConfig> {
@@ -35,4 +36,10 @@ export async function checkAccessibilityPermission(
 /// Recent routine runs, newest first.
 export async function fetchExecutionLog(): Promise<ExecutionRecord[]> {
   return invoke<ExecutionRecord[]>("list_execution_log");
+}
+
+export async function setLanguageInStore(
+  language: Language,
+): Promise<RoutineConfig> {
+  return invoke<RoutineConfig>("set_language", { language });
 }

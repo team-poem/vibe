@@ -22,9 +22,12 @@ export interface Routine {
   actions: Action[];
 }
 
+import type { Language } from "../../shared/i18n/messages";
+
 export interface RoutineConfig {
   activeRoutineId: string | null;
   routines: Routine[];
+  language: Language;
 }
 
 export interface ActionOutcome {

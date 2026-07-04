@@ -9,7 +9,7 @@ pub mod routine;
 use std::sync::{Arc, Mutex};
 
 use pipeline::{Engine, EngineEvent};
-use routine::{ExecutionLog, ExecutionRecord, Routine, RoutineConfig, RoutineStore};
+use routine::{ExecutionLog, ExecutionRecord, Language, Routine, RoutineConfig, RoutineStore};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WindowEvent};
@@ -26,12 +26,49 @@ enum AppStatus {
 }
 
 impl AppStatus {
-    fn label(self) -> &'static str {
-        match self {
-            AppStatus::Waiting => "Status: Waiting",
-            AppStatus::DetectionPaused => "Status: Detection paused",
-            AppStatus::MicPermissionMissing => "Status: Mic permission missing",
+    fn label(self, language: Language) -> &'static str {
+        match (self, language) {
+            (AppStatus::Waiting, Language::En) => "Status: Waiting",
+            (AppStatus::Waiting, Language::Ko) => "상태: 대기 중",
+            (AppStatus::DetectionPaused, Language::En) => "Status: Detection paused",
+            (AppStatus::DetectionPaused, Language::Ko) => "상태: 감지 일시정지",
+            (AppStatus::MicPermissionMissing, Language::En) => "Status: Mic permission missing",
+            (AppStatus::MicPermissionMissing, Language::Ko) => "상태: 마이크 권한 없음",
         }
+    }
+}
+
+/// Fixed tray menu strings in both supported languages.
+struct TrayText {
+    active_routine: &'static str,
+    no_routines: &'static str,
+    show_settings: &'static str,
+    detection: &'static str,
+    autostart: &'static str,
+    test_mic: &'static str,
+    quit: &'static str,
+}
+
+fn tray_text(language: Language) -> TrayText {
+    match language {
+        Language::En => TrayText {
+            active_routine: "Active routine",
+            no_routines: "No routines yet",
+            show_settings: "Show settings",
+            detection: "Detection enabled",
+            autostart: "Auto-start on login",
+            test_mic: "Test microphone",
+            quit: "Quit",
+        },
+        Language::Ko => TrayText {
+            active_routine: "활성 루틴",
+            no_routines: "루틴 없음",
+            show_settings: "설정 열기",
+            detection: "감지 활성화",
+            autostart: "로그인 시 자동 실행",
+            test_mic: "마이크 테스트",
+            quit: "종료",
+        },
     }
 }
 
@@ -86,6 +123,17 @@ fn set_active_routine(
 }
 
 #[tauri::command]
+fn set_language(
+    app: AppHandle,
+    store: tauri::State<'_, StoreState>,
+    language: Language,
+) -> Result<RoutineConfig, String> {
+    let config = store.0.set_language(language).map_err(|e| e.to_string())?;
+    notify_routines_changed(&app);
+    Ok(config)
+}
+
+#[tauri::command]
 fn check_accessibility_permission(prompt: bool) -> bool {
     layout::is_trusted(prompt)
 }
@@ -103,12 +151,13 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let detection_enabled = app.state::<EngineState>().0.is_detection_enabled();
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
     let config = app.state::<StoreState>().0.snapshot();
+    let text = tray_text(config.language);
 
     let menu = Menu::new(app)?;
     menu.append(&MenuItem::with_id(
         app,
         "status",
-        status.label(),
+        status.label(config.language),
         false,
         None::<&str>,
     )?)?;
@@ -117,7 +166,7 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     menu.append(&MenuItem::with_id(
         app,
         "routines_header",
-        "Active routine",
+        text.active_routine,
         false,
         None::<&str>,
     )?)?;
@@ -136,7 +185,7 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         menu.append(&MenuItem::with_id(
             app,
             "routines_empty",
-            "No routines yet",
+            text.no_routines,
             false,
             None::<&str>,
         )?)?;
@@ -146,14 +195,14 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     menu.append(&MenuItem::with_id(
         app,
         "show",
-        "Show settings",
+        text.show_settings,
         true,
         None::<&str>,
     )?)?;
     menu.append(&CheckMenuItem::with_id(
         app,
         "detection",
-        "Detection enabled",
+        text.detection,
         true,
         detection_enabled,
         None::<&str>,
@@ -161,7 +210,7 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     menu.append(&CheckMenuItem::with_id(
         app,
         "autostart",
-        "Auto-start on login",
+        text.autostart,
         true,
         autostart_enabled,
         None::<&str>,
@@ -169,12 +218,18 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     menu.append(&MenuItem::with_id(
         app,
         "test_mic",
-        "Test microphone",
+        text.test_mic,
         true,
         None::<&str>,
     )?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
-    menu.append(&MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "quit",
+        text.quit,
+        true,
+        None::<&str>,
+    )?)?;
 
     Ok(menu)
 }
@@ -231,6 +286,7 @@ pub fn run() {
             save_routine,
             delete_routine,
             set_active_routine,
+            set_language,
             check_accessibility_permission,
             list_execution_log
         ])
