@@ -1,7 +1,10 @@
 mod ax;
 mod placer;
 
-pub use placer::{is_trusted, open_url_in_placed_window, place_app_window, LayoutError};
+pub use placer::{
+    is_trusted, open_file_in_placed_window, open_urls_in_placed_window, place_app_window,
+    LayoutError,
+};
 
 use core_graphics::display::CGDisplay;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -59,8 +62,93 @@ impl Region {
     }
 }
 
-pub(crate) fn main_display_frame() -> CGRect {
-    CGDisplay::main().bounds()
+/// One connected display, in the global top-left coordinate space shared
+/// with the AX API. Sent to the frontend for the arrangement picker.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayInfo {
+    pub id: u32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub is_main: bool,
+}
+
+pub fn list_displays() -> Vec<DisplayInfo> {
+    let main_id = CGDisplay::main().id;
+    CGDisplay::active_displays()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| {
+            let bounds = CGDisplay::new(id).bounds();
+            DisplayInfo {
+                id,
+                x: bounds.origin.x,
+                y: bounds.origin.y,
+                width: bounds.size.width,
+                height: bounds.size.height,
+                is_main: id == main_id,
+            }
+        })
+        .collect()
+}
+
+/// Frame of the routine's target display; falls back to the main display
+/// when the id is unset or no longer connected. Uses the display's visible
+/// frame (menu bar and Dock excluded) so placed windows never hide under
+/// either — full CG bounds is only the last-resort fallback.
+pub fn display_frame(display_id: Option<u32>) -> CGRect {
+    let id = match display_id {
+        Some(id)
+            if CGDisplay::active_displays()
+                .unwrap_or_default()
+                .contains(&id) =>
+        {
+            id
+        }
+        _ => CGDisplay::main().id,
+    };
+    visible_frame(id).unwrap_or_else(|| CGDisplay::new(id).bounds())
+}
+
+/// Usable frame of a display (menu bar and Dock excluded), converted from
+/// Cocoa's bottom-left global coordinates to the top-left space shared by
+/// CG and AX. The NSScreen is matched to the CG display by comparing full
+/// frames, which avoids the device-description dictionary entirely.
+fn visible_frame(display_id: u32) -> Option<CGRect> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+
+    // SAFETY: only read-only geometry getters are touched. AppKit tolerates
+    // reading NSScreen off the main thread, and the placement worker must
+    // not block on a main-thread hop for every window it snaps.
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let screens = NSScreen::screens(mtm);
+    let primary_height = screens.iter().next()?.frame().size.height;
+
+    let flip = |x: f64, y: f64, w: f64, h: f64| CGRect {
+        origin: CGPoint {
+            x,
+            y: primary_height - (y + h),
+        },
+        size: CGSize {
+            width: w,
+            height: h,
+        },
+    };
+
+    let target = CGDisplay::new(display_id).bounds();
+    screens.iter().find_map(|screen| {
+        let f = screen.frame();
+        let frame = flip(f.origin.x, f.origin.y, f.size.width, f.size.height);
+        let matches = (frame.origin.x - target.origin.x).abs() < 1.0
+            && (frame.origin.y - target.origin.y).abs() < 1.0;
+        matches.then(|| {
+            let v = screen.visibleFrame();
+            flip(v.origin.x, v.origin.y, v.size.width, v.size.height)
+        })
+    })
 }
 
 #[cfg(test)]

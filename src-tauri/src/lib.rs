@@ -172,6 +172,11 @@ fn test_microphone() -> Result<String, String> {
     mic::request_microphone()
 }
 
+#[tauri::command]
+fn list_displays() -> Vec<layout::DisplayInfo> {
+    layout::list_displays()
+}
+
 /// Names of installed applications, for the app-name autocomplete in the
 /// routine editor.
 #[tauri::command]
@@ -326,6 +331,7 @@ fn handle_routine_menu_click<R: Runtime>(app: &AppHandle<R>, routine_id: &str) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -342,7 +348,8 @@ pub fn run() {
             get_autostart,
             set_autostart,
             test_microphone,
-            list_installed_apps
+            list_installed_apps,
+            list_displays
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;

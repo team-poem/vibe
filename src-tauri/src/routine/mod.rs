@@ -29,6 +29,7 @@ pub enum Theme {
 
 /// A named, ordered list of actions the user triggers with a double clap.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Routine {
     pub id: String,
     pub name: String,

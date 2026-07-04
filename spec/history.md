@@ -1077,3 +1077,26 @@ Performance Pass, 다중 모니터.
 
 - v0.1.0 GitHub Release (dmg 업로드) + main 머지.
 - 백로그: 감도 설정, 다중 모니터, 서명/공증 빌드.
+## 2026-07-05 (feat/placement-engine)
+
+### 변경
+
+- `Action` 에 `OpenFile` 변형 추가. 기본 앱으로 문서를 열고, 배치 시 System
+  Events 로 최전면 프로세스 pid 를 조회해 해당 앞창을 스냅.
+- 디스플레이 타깃을 액션 단위로 이동 (`Action.display: Option<u32>`). 루틴
+  단위 타깃 제거. `list_displays` 커맨드가 CGDisplay 지오메트리(위치·크기·
+  메인 여부) 제공.
+- 배치 프레임을 NSScreen `visibleFrame`(메뉴바·Dock 제외) 기준으로 전환.
+  Cocoa 좌표를 top-left 로 변환, CGDisplayBounds 와 프레임 대조로 스크린 매칭.
+- 동일 (display, region) 의 URL 들을 Chrome `--new-window url…` 한 번으로
+  묶어 창 하나(탭 N개)로 배치.
+- 실행 종료 시 관련 앱을 목록 역순으로 재활성화 — 스택 첫 항목이 최전면
+  (`restack_frontmost_first`).
+- `tauri-plugin-dialog` 등록, `list_installed_apps` 커맨드 추가.
+- 의존성 추가: objc2, objc2-app-kit(NSScreen), objc2-foundation,
+  tauri-plugin-dialog.
+
+### 검증
+
+- cargo test 55개 통과, clippy `-D warnings` 클린.
+- 라이브: 듀얼 모니터 개별 배치, 문서 열기+배치, URL 탭 묶기, 스택 순서 확인.
