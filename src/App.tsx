@@ -3,10 +3,15 @@ import { useState } from "react";
 import { ExecutionLogPanel } from "./domains/routines/components/ExecutionLogPanel";
 import { RoutineEditor } from "./domains/routines/components/RoutineEditor";
 import { RoutineSidebar } from "./domains/routines/components/RoutineSidebar";
+import { SettingsView } from "./domains/settings/components/SettingsView";
 import { useRoutines } from "./domains/routines/useRoutines";
 import type { Routine } from "./domains/routines/types";
 import { LanguageProvider, useT } from "./shared/i18n/LanguageContext";
+import type { Language } from "./shared/i18n/messages";
+import { useAppliedTheme } from "./shared/theme";
 import "./App.css";
+
+type View = "routines" | "settings";
 
 export default function App() {
   const {
@@ -16,15 +21,22 @@ export default function App() {
     deleteRoutine,
     setActiveRoutine,
     setLanguage,
+    setTheme,
   } = useRoutines();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [view, setView] = useState<View>("routines");
+  useAppliedTheme(config?.theme ?? "system");
 
   if (!config) {
     return (
       <main className="app loading">
-        <p>{error ?? "Loading routines…"}</p>
+        <p>{error ?? "Loading…"}</p>
       </main>
     );
+  }
+
+  if (config.language === null) {
+    return <LanguageOnboarding onPick={setLanguage} />;
   }
 
   const selectedRoutine =
@@ -37,6 +49,7 @@ export default function App() {
     const created = await saveRoutine(NEW_ROUTINE_TEMPLATE);
     if (created) {
       setSelectedId(created.id);
+      setView("routines");
     }
   }
 
@@ -49,6 +62,11 @@ export default function App() {
     setSelectedId(null);
   }
 
+  const handleSelectRoutine = (id: string) => {
+    setSelectedId(id);
+    setView("routines");
+  };
+
   return (
     <LanguageProvider language={config.language}>
       <main className="app">
@@ -56,25 +74,34 @@ export default function App() {
           routines={config.routines}
           activeRoutineId={config.activeRoutineId}
           selectedId={selectedRoutine?.id ?? null}
-          onSelect={setSelectedId}
+          isSettingsOpen={view === "settings"}
+          onSelect={handleSelectRoutine}
           onCreate={handleCreateRoutine}
-          onChangeLanguage={setLanguage}
+          onDelete={handleDeleteRoutine}
+          onOpenSettings={() => setView("settings")}
         />
 
         <div className="mainPane">
-        {selectedRoutine ? (
-          <RoutineEditor
-            key={selectedRoutine.id}
-            routine={selectedRoutine}
-            isActive={selectedRoutine.id === config.activeRoutineId}
-            onSave={handleSaveRoutine}
-            onDelete={handleDeleteRoutine}
-            onActivate={setActiveRoutine}
-          />
+          {view === "settings" ? (
+            <SettingsView
+              language={config.language}
+              theme={config.theme}
+              onChangeLanguage={setLanguage}
+              onChangeTheme={setTheme}
+            />
+          ) : selectedRoutine ? (
+            <RoutineEditor
+              key={selectedRoutine.id}
+              routine={selectedRoutine}
+              isActive={selectedRoutine.id === config.activeRoutineId}
+              onSave={handleSaveRoutine}
+              onDelete={handleDeleteRoutine}
+              onActivate={setActiveRoutine}
+            />
           ) : (
             <EmptyEditorPane onCreate={handleCreateRoutine} />
           )}
-          <ExecutionLogPanel />
+          {view === "routines" && <ExecutionLogPanel />}
         </div>
 
         {error && <p className="appError">{error}</p>}
@@ -87,6 +114,40 @@ const NEW_ROUTINE_TEMPLATE: Routine = {
   id: "",
   name: "New Routine",
   actions: [],
+};
+
+/// First-launch screen, shown before any language is chosen — so it is
+/// deliberately bilingual.
+const LanguageOnboarding = ({
+  onPick,
+}: {
+  onPick: (language: Language) => Promise<void>;
+}) => {
+  return (
+    <main className="onboarding">
+      <h1 className="onboardingBrand">V.I.B.E</h1>
+      <p className="onboardingTagline">👏👏</p>
+      <p className="onboardingQuestion">
+        언어를 선택하세요 · Choose your language
+      </p>
+      <div className="onboardingChoices">
+        <button
+          type="button"
+          className="onboardingChoice"
+          onClick={() => onPick("ko")}
+        >
+          한국어
+        </button>
+        <button
+          type="button"
+          className="onboardingChoice"
+          onClick={() => onPick("en")}
+        >
+          English
+        </button>
+      </div>
+    </main>
+  );
 };
 
 const EmptyEditorPane = ({ onCreate }: { onCreate: () => Promise<void> }) => {

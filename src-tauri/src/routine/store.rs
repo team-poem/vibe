@@ -117,7 +117,14 @@ impl RoutineStore {
         language: crate::routine::Language,
     ) -> Result<RoutineConfig, StoreError> {
         let mut config = self.lock();
-        config.language = language;
+        config.language = Some(language);
+        self.save_locked(&config)?;
+        Ok(config.clone())
+    }
+
+    pub fn set_theme(&self, theme: crate::routine::Theme) -> Result<RoutineConfig, StoreError> {
+        let mut config = self.lock();
+        config.theme = theme;
         self.save_locked(&config)?;
         Ok(config.clone())
     }

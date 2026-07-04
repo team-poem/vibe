@@ -9,7 +9,9 @@ pub mod routine;
 use std::sync::{Arc, Mutex};
 
 use pipeline::{Engine, EngineEvent};
-use routine::{ExecutionLog, ExecutionRecord, Language, Routine, RoutineConfig, RoutineStore};
+use routine::{
+    ExecutionLog, ExecutionRecord, Language, Routine, RoutineConfig, RoutineStore, Theme,
+};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WindowEvent};
@@ -45,7 +47,6 @@ struct TrayText {
     show_settings: &'static str,
     detection: &'static str,
     autostart: &'static str,
-    test_mic: &'static str,
     quit: &'static str,
 }
 
@@ -57,7 +58,6 @@ fn tray_text(language: Language) -> TrayText {
             show_settings: "Show settings",
             detection: "Detection enabled",
             autostart: "Auto-start on login",
-            test_mic: "Test microphone",
             quit: "Quit",
         },
         Language::Ko => TrayText {
@@ -66,7 +66,6 @@ fn tray_text(language: Language) -> TrayText {
             show_settings: "설정 열기",
             detection: "감지 활성화",
             autostart: "로그인 시 자동 실행",
-            test_mic: "마이크 테스트",
             quit: "종료",
         },
     }
@@ -134,6 +133,11 @@ fn set_language(
 }
 
 #[tauri::command]
+fn set_theme(store: tauri::State<'_, StoreState>, theme: Theme) -> Result<RoutineConfig, String> {
+    store.0.set_theme(theme).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn check_accessibility_permission(prompt: bool) -> bool {
     layout::is_trusted(prompt)
 }
@@ -141,6 +145,57 @@ fn check_accessibility_permission(prompt: bool) -> bool {
 #[tauri::command]
 fn list_execution_log(log: tauri::State<'_, LogState>) -> Vec<ExecutionRecord> {
     log.0.snapshot()
+}
+
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let autostart = app.autolaunch();
+    let outcome = if enabled {
+        autostart.enable()
+    } else {
+        autostart.disable()
+    };
+    outcome.map_err(|e| e.to_string())?;
+    refresh_tray_menu(&app);
+    Ok(app.autolaunch().is_enabled().unwrap_or(false))
+}
+
+/// Opens the input device, which triggers the macOS microphone permission
+/// dialog on first use. Returns the device name on success.
+#[tauri::command]
+fn test_microphone() -> Result<String, String> {
+    mic::request_microphone()
+}
+
+/// Names of installed applications, for the app-name autocomplete in the
+/// routine editor.
+#[tauri::command]
+fn list_installed_apps() -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dirs = [
+        "/Applications".to_owned(),
+        "/System/Applications".to_owned(),
+        format!("{home}/Applications"),
+    ];
+
+    let mut apps = std::collections::BTreeSet::new();
+    for dir in &dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(app) = name.strip_suffix(".app") {
+                apps.insert(app.to_owned());
+            }
+        }
+    }
+    apps.into_iter().collect()
 }
 
 /// Build the tray menu from the current app state. The menu is rebuilt
@@ -151,13 +206,14 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let detection_enabled = app.state::<EngineState>().0.is_detection_enabled();
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
     let config = app.state::<StoreState>().0.snapshot();
-    let text = tray_text(config.language);
+    let language = config.language.unwrap_or_default();
+    let text = tray_text(language);
 
     let menu = Menu::new(app)?;
     menu.append(&MenuItem::with_id(
         app,
         "status",
-        status.label(config.language),
+        status.label(language),
         false,
         None::<&str>,
     )?)?;
@@ -213,13 +269,6 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         text.autostart,
         true,
         autostart_enabled,
-        None::<&str>,
-    )?)?;
-    menu.append(&MenuItem::with_id(
-        app,
-        "test_mic",
-        text.test_mic,
-        true,
         None::<&str>,
     )?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -287,8 +336,13 @@ pub fn run() {
             delete_routine,
             set_active_routine,
             set_language,
+            set_theme,
             check_accessibility_permission,
-            list_execution_log
+            list_execution_log,
+            get_autostart,
+            set_autostart,
+            test_microphone,
+            list_installed_apps
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -324,6 +378,10 @@ pub fn run() {
                 }
                 EngineEvent::CaptureFailed(message) => {
                     eprintln!("[audio] capture failed: {message}");
+                    let app = trigger_app.clone();
+                    let _ = app.clone().run_on_main_thread(move || {
+                        set_status(&app, AppStatus::MicPermissionMissing);
+                    });
                 }
             });
             app.manage(EngineState(engine));
@@ -383,15 +441,6 @@ pub fn run() {
                             }
                             refresh_tray_menu(app);
                         }
-                        "test_mic" => match mic::request_microphone() {
-                            Ok(device_name) => {
-                                println!("[mic] access granted, device={device_name}");
-                            }
-                            Err(err) => {
-                                eprintln!("[mic] access failed: {err}");
-                                set_status(app, AppStatus::MicPermissionMissing);
-                            }
-                        },
                         "quit" => {
                             app.state::<EngineState>().0.shutdown();
                             app.exit(0);
