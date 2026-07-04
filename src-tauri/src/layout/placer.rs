@@ -5,8 +5,10 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use core_graphics::geometry::CGRect;
+
 use crate::layout::ax::{self, AxElement, Placement};
-use crate::layout::{main_display_frame, Region};
+use crate::layout::Region;
 
 const WINDOW_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 const WINDOW_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -35,17 +37,18 @@ pub fn is_trusted(prompt: bool) -> bool {
 /// Snap the front window of a (just launched or already running) app to a
 /// region. The front window is intentional here: for app actions the user
 /// wants "that app's window" in the region, new or not.
-pub fn place_app_window(app_name: &str, region: Region) -> Result<Placement, LayoutError> {
+pub fn place_app_window(
+    app_name: &str,
+    region: Region,
+    display: CGRect,
+) -> Result<Placement, LayoutError> {
     if !is_trusted(false) {
         return Err(LayoutError::NotTrusted);
     }
     let pid = wait_for_pid(app_name)?;
     let app = ax::application_element(pid);
     let window = wait_for_window(&app, &[], app_name)?;
-    Ok(ax::set_window_frame(
-        &window,
-        region.frame(main_display_frame()),
-    )?)
+    Ok(ax::set_window_frame(&window, region.frame(display))?)
 }
 
 /// Open a URL in a fresh browser window and snap that specific window.
@@ -53,14 +56,24 @@ pub fn place_app_window(app_name: &str, region: Region) -> Result<Placement, Lay
 /// `open --args --new-window` is ignored when the browser is already
 /// running, so the browser binary is invoked directly; the new window is
 /// identified by diffing against a pre-open snapshot (both PoC findings).
-/// Falls back to a plain `open <url>` without placement when no supported
-/// browser is installed.
-pub fn open_url_in_placed_window(url: &str, region: Region) -> Result<Placement, LayoutError> {
+/// Every URL in `urls` becomes a tab of that one window, so URLs sharing a
+/// region never spawn separate windows. Falls back to plain `open <url>`
+/// without placement when no supported browser is installed.
+pub fn open_urls_in_placed_window(
+    urls: &[&str],
+    region: Region,
+    display: CGRect,
+) -> Result<Placement, LayoutError> {
+    if urls.is_empty() {
+        return Ok(Placement::Full);
+    }
     if !is_trusted(false) {
         return Err(LayoutError::NotTrusted);
     }
     let Some(chrome) = find_chrome_binary() else {
-        open_url_without_placement(url)?;
+        for url in urls {
+            open_url_without_placement(url)?;
+        }
         return Err(LayoutError::AppNotFound("Google Chrome".to_owned()));
     };
 
@@ -70,7 +83,8 @@ pub fn open_url_in_placed_window(url: &str, region: Region) -> Result<Placement,
     };
 
     Command::new(&chrome)
-        .args(["--new-window", url])
+        .arg("--new-window")
+        .args(urls)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -82,10 +96,47 @@ pub fn open_url_in_placed_window(url: &str, region: Region) -> Result<Placement,
     let pid = wait_for_pid("Google Chrome")?;
     let app = ax::application_element(pid);
     let window = wait_for_window(&app, &snapshot, "Google Chrome")?;
-    Ok(ax::set_window_frame(
-        &window,
-        region.frame(main_display_frame()),
-    )?)
+    Ok(ax::set_window_frame(&window, region.frame(display))?)
+}
+
+/// Open a document with its default app and snap that app's front window.
+///
+/// The handler app is unknown ahead of time, so after opening we ask System
+/// Events for the frontmost process (this may show the macOS Automation
+/// consent dialog once) and place its front window.
+pub fn open_file_in_placed_window(
+    path: &str,
+    region: Region,
+    display: CGRect,
+) -> Result<Placement, LayoutError> {
+    if !is_trusted(false) {
+        return Err(LayoutError::NotTrusted);
+    }
+    Command::new("open")
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|source| LayoutError::Spawn {
+            command: "open <file>",
+            source,
+        })?;
+    std::thread::sleep(Duration::from_millis(900));
+
+    let pid =
+        frontmost_pid().ok_or_else(|| LayoutError::AppNotFound("frontmost app".to_owned()))?;
+    let app = ax::application_element(pid);
+    let window = wait_for_window(&app, &[], "document viewer")?;
+    Ok(ax::set_window_frame(&window, region.frame(display))?)
+}
+
+fn frontmost_pid() -> Option<i32> {
+    let script = r#"tell application "System Events" to get unix id of first process whose frontmost is true"#;
+    let output = Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .ok()?;
+    first_pid(&output.stdout)
 }
 
 fn open_url_without_placement(url: &str) -> Result<(), LayoutError> {
