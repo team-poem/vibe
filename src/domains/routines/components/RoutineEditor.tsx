@@ -8,6 +8,7 @@ import {
   checkAccessibilityPermission,
   fetchDisplays,
   fetchInstalledApps,
+  restartApp,
 } from "../api";
 import {
   derivePreset,
@@ -839,10 +840,26 @@ const PlacementPermissionHint = ({ needed }: { needed: boolean }) => {
 
   return (
     <div className="permissionHint">
-      <span>{t("permission.hint")}</span>
-      <button type="button" className="ghostButton" onClick={handleEnableClick}>
-        {t("permission.enable")}
-      </button>
+      <span>
+        {t("permission.hint")}{" "}
+        <span className="permissionSub">{t("permission.restartHint")}</span>
+      </span>
+      <span className="permissionActions">
+        <button
+          type="button"
+          className="ghostButton"
+          onClick={handleEnableClick}
+        >
+          {t("permission.enable")}
+        </button>
+        <button
+          type="button"
+          className="ghostButton"
+          onClick={() => void restartApp()}
+        >
+          {t("permission.restart")}
+        </button>
+      </span>
     </div>
   );
 };
