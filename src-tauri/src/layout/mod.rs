@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum Region {
     Full,
+    /// Move to the display without resizing (window keeps its own size).
+    Centered,
     LeftHalf,
     RightHalf,
     LeftThird,
@@ -48,7 +50,9 @@ impl Region {
         };
 
         match self {
-            Self::Full => rect(0.0, 0.0, 1.0, 1.0),
+            // Centered is handled by the placer (needs the window size);
+            // the full frame is only a fallback.
+            Self::Full | Self::Centered => rect(0.0, 0.0, 1.0, 1.0),
             Self::LeftHalf => rect(0.0, 0.0, 0.5, 1.0),
             Self::RightHalf => rect(0.5, 0.0, 0.5, 1.0),
             Self::LeftThird => rect(0.0, 0.0, 1.0 / 3.0, 1.0),

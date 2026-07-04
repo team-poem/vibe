@@ -3,6 +3,7 @@ import type { ThemeSetting } from "../../shared/theme";
 
 export type Region =
   | "full"
+  | "centered"
   | "left-half"
   | "right-half"
   | "left-third"

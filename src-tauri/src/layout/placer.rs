@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use core_graphics::geometry::CGRect;
+use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 
 use crate::layout::ax::{self, AxElement, Placement};
 use crate::layout::Region;
@@ -48,7 +48,29 @@ pub fn place_app_window(
     let pid = wait_for_pid(app_name)?;
     let app = ax::application_element(pid);
     let window = wait_for_window(&app, &[], app_name)?;
-    Ok(ax::set_window_frame(&window, region.frame(display))?)
+    apply_placement(&window, region, display)
+}
+
+/// Snap or, for `Centered`, move-only: the window keeps its natural size
+/// and is centered on the target display.
+fn apply_placement(
+    window: &ax::AxElement,
+    region: Region,
+    display: CGRect,
+) -> Result<Placement, LayoutError> {
+    if region == Region::Centered {
+        let size = ax::window_size(window).unwrap_or(CGSize {
+            width: 0.0,
+            height: 0.0,
+        });
+        let origin = CGPoint {
+            x: display.origin.x + ((display.size.width - size.width) / 2.0).max(0.0),
+            y: display.origin.y + ((display.size.height - size.height) / 2.0).max(0.0),
+        };
+        ax::set_window_position(window, origin)?;
+        return Ok(Placement::MovedOnly);
+    }
+    Ok(ax::set_window_frame(window, region.frame(display))?)
 }
 
 /// Open a URL in a fresh browser window and snap that specific window.
@@ -96,7 +118,7 @@ pub fn open_urls_in_placed_window(
     let pid = wait_for_pid("Google Chrome")?;
     let app = ax::application_element(pid);
     let window = wait_for_window(&app, &snapshot, "Google Chrome")?;
-    Ok(ax::set_window_frame(&window, region.frame(display))?)
+    apply_placement(&window, region, display)
 }
 
 /// Open a document with its default app and snap that app's front window.

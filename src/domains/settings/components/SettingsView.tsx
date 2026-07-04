@@ -200,11 +200,16 @@ const MicrophoneRow = () => {
   );
 };
 
+const PERMISSION_RECHECK_MS = 3000;
+
 const AccessibilityRow = () => {
   const t = useT();
   const [granted, setGranted] = useState<boolean | null>(null);
 
   useEffect(() => {
+    if (granted === true) {
+      return;
+    }
     let cancelled = false;
     async function checkQuietly() {
       const ok = await checkAccessibilityPermission(false);
@@ -213,10 +218,14 @@ const AccessibilityRow = () => {
       }
     }
     void checkQuietly();
+    const timer = window.setInterval(checkQuietly, PERMISSION_RECHECK_MS);
+    window.addEventListener("focus", checkQuietly);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", checkQuietly);
     };
-  }, []);
+  }, [granted]);
 
   async function handleEnableClick() {
     setGranted(await checkAccessibilityPermission(true));
