@@ -501,6 +501,13 @@ body {
   overflow-y: auto;
 }
 
+/* Absolutely-positioned minimap children spill if flex shrinks their
+   container — canvas items keep their natural height and the column
+   scrolls instead. */
+.canvas > * {
+  flex: 0 0 auto;
+}
+
 .canvasGuide {
   margin: 4px 0 14px;
   font-size: 12px;
