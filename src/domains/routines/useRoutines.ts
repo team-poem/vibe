@@ -3,12 +3,14 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import type { Language } from "../../shared/i18n/messages";
+import type { ThemeSetting } from "../../shared/theme";
 import {
   deleteRoutineFromStore,
   fetchRoutineConfig,
   saveRoutineToStore,
   setActiveRoutineInStore,
   setLanguageInStore,
+  setThemeInStore,
 } from "./api";
 import type { Routine, RoutineConfig } from "./types";
 
@@ -19,6 +21,7 @@ interface UseRoutinesResult {
   deleteRoutine: (id: string) => Promise<void>;
   setActiveRoutine: (id: string | null) => Promise<void>;
   setLanguage: (language: Language) => Promise<void>;
+  setTheme: (theme: ThemeSetting) => Promise<void>;
 }
 
 /// Owns the routine document mirrored from the Rust store. Every mutation
@@ -93,6 +96,15 @@ export const useRoutines = (): UseRoutinesResult => {
     }
   }
 
+  async function setTheme(theme: ThemeSetting) {
+    try {
+      setConfig(await setThemeInStore(theme));
+      setError(null);
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
   return {
     config,
     error,
@@ -100,6 +112,7 @@ export const useRoutines = (): UseRoutinesResult => {
     deleteRoutine,
     setActiveRoutine,
     setLanguage,
+    setTheme,
   };
 };
 
