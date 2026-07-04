@@ -23,11 +23,14 @@ export interface Routine {
 }
 
 import type { Language } from "../../shared/i18n/messages";
+import type { ThemeSetting } from "../../shared/theme";
 
 export interface RoutineConfig {
   activeRoutineId: string | null;
   routines: Routine[];
-  language: Language;
+  /// null until the user picks a language in first-launch onboarding.
+  language: Language | null;
+  theme: ThemeSetting;
 }
 
 export interface ActionOutcome {

@@ -17,6 +17,16 @@ pub enum Language {
     Ko,
 }
 
+/// Webview color theme. `System` follows the macOS appearance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// A named, ordered list of actions the user triggers with a double clap.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Routine {
@@ -33,8 +43,11 @@ pub struct Routine {
 pub struct RoutineConfig {
     pub active_routine_id: Option<String>,
     pub routines: Vec<Routine>,
+    /// `None` until the user picks a language in first-launch onboarding.
     #[serde(default)]
-    pub language: Language,
+    pub language: Option<Language>,
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 impl RoutineConfig {
@@ -50,7 +63,8 @@ impl RoutineConfig {
         Self {
             active_routine_id: Some(sample.id.clone()),
             routines: vec![sample],
-            language: Language::default(),
+            language: None,
+            theme: Theme::default(),
         }
     }
 
@@ -87,15 +101,23 @@ mod tests {
     }
 
     #[test]
-    fn config_without_language_defaults_to_english() {
-        // Documents written before the language field existed must load.
+    fn config_without_language_is_unset() {
+        // Documents written before the language field existed must load and
+        // trigger first-launch language onboarding.
         let json = r#"{"activeRoutineId":null,"routines":[]}"#;
         let config: RoutineConfig = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(config.language, Language::En);
+        assert_eq!(config.language, None);
     }
 
     #[test]
     fn language_serializes_lowercase() {
         assert_eq!(serde_json::to_string(&Language::Ko).unwrap(), "\"ko\"");
+    }
+
+    #[test]
+    fn config_without_theme_defaults_to_system() {
+        let json = r#"{"activeRoutineId":null,"routines":[]}"#;
+        let config: RoutineConfig = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(config.theme, Theme::System);
     }
 }
