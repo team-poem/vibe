@@ -1244,3 +1244,17 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - cargo test 55개, clippy, tsc/vite 빌드 통과.
+
+## 2026-07-05 (fix/doc-placement)
+
+### 변경
+
+- 문서 배치 대상 앱을 LaunchServices 조회(`NSWorkspace
+  URLForApplicationToOpenURL`)로 확정 — 최전면 앱 추측(osascript) 은
+  핸들러 미확인 시의 폴백으로 강등. System Events 자동화 권한 의존 제거.
+- 뷰어가 문서 로드 후 창을 재조정하는 문제에 대응해 프레임을 3회 적용
+  (즉시 / +0.6s / +1.4s).
+
+### 검증
+
+- cargo test 55개, clippy 통과. 라이브 검증은 사용자 확인.
