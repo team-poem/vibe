@@ -98,6 +98,12 @@ pub fn list_displays() -> Vec<DisplayInfo> {
         .collect()
 }
 
+pub fn display_connected(display_id: u32) -> bool {
+    CGDisplay::active_displays()
+        .unwrap_or_default()
+        .contains(&display_id)
+}
+
 /// Frame of the routine's target display; falls back to the main display
 /// when the id is unset or no longer connected. Uses the display's visible
 /// frame (menu bar and Dock excluded) so placed windows never hide under

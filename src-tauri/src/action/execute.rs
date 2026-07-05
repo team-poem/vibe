@@ -66,8 +66,18 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     }
 
     // URLs sharing a display+region open together: one new browser window
-    // per target, each URL a tab of it.
+    // per target, each URL a tab of it. Targets on a disconnected display
+    // open plainly instead of being forced onto another screen.
     for ((display_id, region), indices) in group_by_target(actions, &deferred_urls) {
+        if let Some(id) = display_id {
+            if !layout::display_connected(id) {
+                for &i in &indices {
+                    outcomes[i] = run_outcome(&actions[i]);
+                    append_detail(&mut outcomes[i], "target display not connected");
+                }
+                continue;
+            }
+        }
         let display = layout::display_frame(display_id);
         let urls: Vec<&str> = indices
             .iter()
@@ -108,6 +118,12 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
             continue;
         };
+        if let Some(id) = action.display() {
+            if !layout::display_connected(id) {
+                append_detail(&mut outcomes[index], "target display not connected");
+                continue;
+            }
+        }
         let display = layout::display_frame(action.display());
         match layout::place_app_window(name, region, display) {
             Ok(placement) => {
@@ -135,6 +151,11 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
             let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
                 continue;
             };
+            if let Some(id) = action.display() {
+                if !layout::display_connected(id) {
+                    continue;
+                }
+            }
             let display = layout::display_frame(action.display());
             let _ = layout::place_app_window(name, region, display);
         }
@@ -147,6 +168,13 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         let (Action::OpenFile { path, .. }, Some(region)) = (action, action.region()) else {
             continue;
         };
+        if let Some(id) = action.display() {
+            if !layout::display_connected(id) {
+                outcomes[index] = run_outcome(action);
+                append_detail(&mut outcomes[index], "target display not connected");
+                continue;
+            }
+        }
         let display = layout::display_frame(action.display());
         outcomes[index] = match layout::open_file_in_placed_window(path, region, display) {
             Ok(placement) => {

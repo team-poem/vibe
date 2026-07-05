@@ -1229,3 +1229,18 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - cargo test 55개, clippy `-D warnings`, tsc/vite 빌드 통과.
+
+## 2026-07-05 (fix/offline-display-placements)
+
+### 변경
+
+- 연결되지 않은 모니터에 저장된 배치를 UI 에서 숨김 처리 (데이터 보존,
+  재연결 시 자동 복귀). 기존에는 디스플레이가 1개면 필터가 꺼져 다른
+  모니터의 배치가 현재 화면에 합쳐져 표시됐음.
+- 액션 리스트 하단에 "N개 배치는 연결되지 않은 모니터의 것" 안내 추가.
+- 실행 시 대상 모니터 미연결 액션은 열기만 하고 배치 생략
+  (`display_connected`) — 다른 화면으로 강제 배치하지 않음.
+
+### 검증
+
+- cargo test 55개, clippy, tsc/vite 빌드 통과.
