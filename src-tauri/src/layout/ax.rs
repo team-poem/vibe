@@ -97,6 +97,26 @@ pub fn windows(app: &AxElement) -> Result<Vec<AxElement>, AxError> {
     Ok(result)
 }
 
+/// Current frame of a window, for placement verification.
+pub fn window_frame(window: &AxElement) -> Option<CGRect> {
+    let origin = window_position(window)?;
+    let size = window_size(window)?;
+    Some(CGRect { origin, size })
+}
+
+fn window_position(window: &AxElement) -> Option<CGPoint> {
+    let value = copy_attribute(window, kAXPositionAttribute).ok()?;
+    let mut point = CGPoint { x: 0.0, y: 0.0 };
+    let ok = unsafe {
+        AXValueGetValue(
+            value.as_CFTypeRef() as AXValueRef,
+            kAXValueTypeCGPoint,
+            &mut point as *mut _ as *mut c_void,
+        )
+    };
+    ok.then_some(point)
+}
+
 /// Current size of a window, for move-without-resize placement.
 pub fn window_size(window: &AxElement) -> Option<CGSize> {
     let value = copy_attribute(window, kAXSizeAttribute).ok()?;

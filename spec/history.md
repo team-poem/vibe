@@ -1272,3 +1272,74 @@ Performance Pass, 다중 모니터.
 - 릴리즈 앱 프로세스명은 `vibe` — 재설치 시
   `pkill -f "V.I.B.E.app/Contents/MacOS/vibe"` 후 프로세스 시작 시각으로
   교체 검증. 옛 인스턴스가 살아 있으면 `open` 이 구버전만 활성화함.
+
+## 2026-07-05 (fix/doc-fullscreen-stable)
+
+### 배경
+
+- 0.1.2 의 fix/doc-placement 커밋(18321f0)은 패치 스크립트의 문자열 매칭
+  실패로 placer.rs 변경이 누락된 채 history/Cargo.toml 만 커밋됨 — 문서
+  전체화면 픽스가 실제로는 배포되지 않았음. 이번 브랜치가 실 구현을 반영.
+
+### 변경
+
+- `default_handler_app`: LaunchServices(`NSWorkspace
+  URLForApplicationToOpenURL`)로 문서 핸들러 앱을 확정. osascript
+  frontmost 추측은 핸들러 미확인 시 폴백으로만 사용.
+- 핸들러 앱의 기존 창을 스냅샷 후 `open`, 새로 생긴(스냅샷에 없는) 창을
+  우선 타겟팅 (`pick_target_window`) — 이미 열린 창이 아닌 새 문서 창을
+  배치.
+- 고정 3회 재적용을 `place_until_stable` 검증 루프로 교체: 배치 적용 후
+  350ms 간격으로 실제 창 프레임(`ax::window_frame`)을 목표 프레임과 비교
+  (허용 오차 2px), 2회 연속 일치 시 종료, 최대 4초. 뷰어가 문서 로드 후
+  임의 시점에 창을 재조정해도 수렴할 때까지 다시 적용.
+- ax.rs 에 `window_frame`/`window_position` 게터 추가
+  (kAXPositionAttribute + AXValueGetValue).
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 55개 통과.
+- 커밋 전 `place_until_stable`·`default_handler_app` 심볼 존재를 grep 으로
+  확인 (18321f0 무늬만 커밋 재발 방지).
+- 라이브 반복 검증은 사용자 확인.
+
+## 2026-07-05 (feat/clap-sensitivity)
+
+### 배경
+
+- 더블 클랩이 자주 미검출된다는 리포트. 원인 분석 결과 세 게이트가 실제
+  박수를 걸러내고 있었음: (1) 감쇠 게이트 — 60ms 내 20dB 하강 요구는
+  울림 있는 방·마이크 AGC 환경에서 실패, 박수 자체가 폐기됨. (2) 온셋
+  문턱 32dB — 배경 소음이 있으면 도달 못 함. (3) 매처 간격 150~600ms
+  고정 — 빠르거나 느린 더블 클랩이 범위 밖, 크기 차 12dB 제한은 AGC 가
+  둘째 박수를 줄이면 초과.
+
+### 변경
+
+- `Sensitivity` enum(low/medium/high) 추가, 설정 파일에 저장
+  (`sensitivity`, 기본 medium). 기존 문서는 serde default 로 medium.
+- `DetectorConfig::for_sensitivity` / `MatcherConfig::for_sensitivity`
+  프리셋: low 는 기존 엄격 튜닝 유지, medium 은 온셋 26dB·감쇠
+  14dB/100ms·간격 130~800ms·크기 차 16dB 로 완화, high 는 온셋
+  21dB·감쇠 10dB/140ms·간격 110~1000ms·크기 차 20dB.
+- 파이프라인이 AtomicU8 로 감도를 공유, 변경 시 다음 오디오 청크에서
+  detector/matcher 를 새 튜닝으로 재생성 (재시작 불필요).
+- `set_sensitivity` 커맨드: store 저장 + 엔진 즉시 반영.
+- 설정 화면에 "박수 감도" 섹션(낮음/보통/높음 segmented) 과 안내 문구
+  추가. en/ko 문구, `.settingsHint` 스타일.
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 58개(신규 3개 포함) 통과,
+  tsc/vite 빌드 통과.
+- 기본값이 medium 으로 완화되므로 설치 직후부터 인식률 개선 기대.
+  오검출 증가 여부는 사용자 라이브 확인.
+
+## 2026-07-05 (release 0.1.3)
+
+### 변경
+
+- 버전 0.1.3 (tauri.conf / Cargo.toml / 설정 화면 표기).
+- 포함 변경: fix/doc-fullscreen-stable (문서 배치 verify-until-stable —
+  0.1.2 에서 누락 배포된 실 구현), feat/clap-sensitivity (박수 감도
+  낮음/보통/높음 설정, 기본 튜닝 완화).

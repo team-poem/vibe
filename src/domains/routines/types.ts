@@ -51,12 +51,15 @@ export interface DisplayInfo {
   isMain: boolean;
 }
 
+export type ClapSensitivity = "low" | "medium" | "high";
+
 export interface RoutineConfig {
   activeRoutineId: string | null;
   routines: Routine[];
   /// null until the user picks a language in first-launch onboarding.
   language: Language | null;
   theme: ThemeSetting;
+  sensitivity: ClapSensitivity;
 }
 
 export interface ActionOutcome {

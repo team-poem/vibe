@@ -22,6 +22,7 @@ export default function App() {
     setActiveRoutine,
     setLanguage,
     setTheme,
+    setSensitivity,
   } = useRoutines();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("routines");
@@ -86,8 +87,10 @@ export default function App() {
             <SettingsView
               language={config.language}
               theme={config.theme}
+              sensitivity={config.sensitivity}
               onChangeLanguage={setLanguage}
               onChangeTheme={setTheme}
+              onChangeSensitivity={setSensitivity}
             />
           ) : selectedRoutine ? (
             <RoutineEditor

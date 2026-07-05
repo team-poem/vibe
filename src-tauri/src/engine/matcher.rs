@@ -1,4 +1,5 @@
 use crate::engine::event::ClapEvent;
+use crate::engine::Sensitivity;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatcherConfig {
@@ -10,11 +11,36 @@ pub struct MatcherConfig {
 
 impl Default for MatcherConfig {
     fn default() -> Self {
-        Self {
-            min_interval_ms: 150,
-            max_interval_ms: 600,
-            max_peak_db_diff: 12.0,
-            max_flatness_diff: 0.25,
+        Self::for_sensitivity(Sensitivity::Medium)
+    }
+}
+
+impl MatcherConfig {
+    /// Tuning per sensitivity level. `Low` keeps the strict original
+    /// window; `Medium` and `High` widen the allowed interval (people
+    /// double-clap anywhere from ~120 ms to ~1 s apart) and tolerate a
+    /// larger loudness gap, because microphone auto-gain often ducks the
+    /// second clap.
+    pub fn for_sensitivity(sensitivity: Sensitivity) -> Self {
+        match sensitivity {
+            Sensitivity::Low => Self {
+                min_interval_ms: 150,
+                max_interval_ms: 600,
+                max_peak_db_diff: 12.0,
+                max_flatness_diff: 0.25,
+            },
+            Sensitivity::Medium => Self {
+                min_interval_ms: 130,
+                max_interval_ms: 800,
+                max_peak_db_diff: 16.0,
+                max_flatness_diff: 0.35,
+            },
+            Sensitivity::High => Self {
+                min_interval_ms: 110,
+                max_interval_ms: 1000,
+                max_peak_db_diff: 20.0,
+                max_flatness_diff: 0.45,
+            },
         }
     }
 }
@@ -170,10 +196,14 @@ mod tests {
 
     #[test]
     fn interval_too_long_is_rejected() {
-        let mut matcher = StreamingMatcher::new(MatcherConfig::default());
+        let config = MatcherConfig::default();
+        let mut matcher = StreamingMatcher::new(config);
         let triggers = push_all(
             &mut matcher,
-            &[clap(100, -10.0, 0.35), clap(900, -10.0, 0.35)],
+            &[
+                clap(100, -10.0, 0.35),
+                clap(100 + config.max_interval_ms + 1, -10.0, 0.35),
+            ],
         );
         assert!(triggers.is_empty());
     }
