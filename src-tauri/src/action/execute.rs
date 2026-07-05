@@ -66,7 +66,9 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     let wants_layout =
         !deferred_urls.is_empty() || !deferred_files.is_empty() || !app_placements.is_empty();
     if wants_layout && !layout::is_trusted(false) {
-        eprintln!("[layout] accessibility permission missing; skipping window placement");
+        crate::layout::log_place(
+            "[layout] accessibility permission missing; skipping window placement",
+        );
         for index in deferred_urls.into_iter().chain(deferred_files) {
             outcomes[index] = run_outcome(&actions[index]);
             append_detail(&mut outcomes[index], "placement skipped (no permission)");
