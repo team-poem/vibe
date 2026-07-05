@@ -98,9 +98,17 @@ export const RoutineEditor = ({
     .filter(
       ({ action }) =>
         Boolean(action.region) &&
-        (displays.length < 2 ||
-          targetDisplayOf(action) === (viewedDisplay?.id ?? mainDisplayId)),
+        targetDisplayOf(action) === (viewedDisplay?.id ?? mainDisplayId),
     );
+
+  // Placements saved for a display that is not currently connected are
+  // hidden (never deleted) and come back when it reconnects.
+  const offlinePlacementCount = draft.actions.filter(
+    (action) =>
+      action.region &&
+      action.display != null &&
+      !displays.some((d) => d.id === action.display),
+  ).length;
 
   // The split tab follows the viewed display: derived from what is placed
   // there, and manual choices are remembered per display.
@@ -131,12 +139,9 @@ export const RoutineEditor = ({
     const viewedId = viewedDisplay?.id ?? mainDisplayId;
     draft.actions.forEach((action, index) => {
       // The tab bar scopes the list: only this display's stacks are shown
-      // (unplaced actions always are).
-      if (
-        action.region &&
-        displays.length > 1 &&
-        targetDisplayOf(action) !== viewedId
-      ) {
+      // (unplaced actions always are). Disconnected displays' placements
+      // are hidden here and surfaced by the offline note below.
+      if (action.region && targetDisplayOf(action) !== viewedId) {
         return;
       }
       const key = groupKeyOf(action);
@@ -437,6 +442,13 @@ export const RoutineEditor = ({
               </div>
             ))}
           </div>
+
+          {offlinePlacementCount > 0 && (
+            <p className="editorHint offlineNote">
+              {offlinePlacementCount}
+              {t("editor.offlinePlacements")}
+            </p>
+          )}
 
           <div className="addActionRow">
             <button
