@@ -70,6 +70,12 @@ export async function testMicrophone(): Promise<string> {
   return invoke<string>("test_microphone");
 }
 
+/// Clear our stale TCC entry (unsigned rebuilds invalidate grants while
+/// the toggle still looks on) and re-prompt for a fresh one.
+export async function repairAccessibilityPermission(): Promise<boolean> {
+  return invoke<boolean>("repair_accessibility_permission");
+}
+
 /// Relaunch the app — required for a freshly granted Accessibility
 /// permission to take effect on a running process.
 export async function restartApp(): Promise<void> {

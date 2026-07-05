@@ -2,8 +2,8 @@ mod ax;
 mod placer;
 
 pub use placer::{
-    is_trusted, open_file_in_placed_window, open_urls_in_placed_window, place_app_window,
-    LayoutError,
+    app_window_ready, is_trusted, open_file_in_placed_window, open_urls_in_placed_window,
+    place_app_window, LayoutError,
 };
 
 use core_graphics::display::CGDisplay;
@@ -96,6 +96,12 @@ pub fn list_displays() -> Vec<DisplayInfo> {
             }
         })
         .collect()
+}
+
+pub fn display_connected(display_id: u32) -> bool {
+    CGDisplay::active_displays()
+        .unwrap_or_default()
+        .contains(&display_id)
 }
 
 /// Frame of the routine's target display; falls back to the main display

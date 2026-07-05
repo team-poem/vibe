@@ -149,6 +149,19 @@ fn restart_app(app: AppHandle) {
     app.restart();
 }
 
+/// Unsigned builds get a new code identity every rebuild, leaving a stale
+/// TCC row that reports "granted" while every call is blocked. Clear our
+/// own entry, then re-prompt so a fresh grant matches this binary.
+#[tauri::command]
+fn repair_accessibility_permission() -> bool {
+    let _ = std::process::Command::new("tccutil")
+        .args(["reset", "Accessibility", "com.vibe.app"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    layout::is_trusted(true)
+}
+
 #[tauri::command]
 fn list_execution_log(log: tauri::State<'_, LogState>) -> Vec<ExecutionRecord> {
     log.0.snapshot()
@@ -351,6 +364,7 @@ pub fn run() {
             set_language,
             set_theme,
             check_accessibility_permission,
+            repair_accessibility_permission,
             restart_app,
             list_execution_log,
             get_autostart,

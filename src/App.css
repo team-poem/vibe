@@ -424,6 +424,9 @@ body {
 
 .displayArrangement {
   position: relative;
+  flex: none;
+  width: 200px;
+  height: 64px;
   margin-bottom: 2px;
 }
 
@@ -964,6 +967,11 @@ body {
 .iconButton:disabled {
   opacity: 0.25;
   cursor: default;
+}
+
+.offlineNote {
+  margin: 12px 0 0;
+  font-size: 12px;
 }
 
 .addActionRow {

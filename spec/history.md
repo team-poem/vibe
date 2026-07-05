@@ -1187,3 +1187,88 @@ Performance Pass, 다중 모니터.
   사용) 승인이 무효화됨. 유령 항목은 `tccutil reset Accessibility
   com.vibe.app` 으로 제거 후 재승인. 근본 해결은 서명 identity 확보
   (Apple Developer) — 0.1.x 백로그 1순위.
+
+## 2026-07-05 (fix/placement-races)
+
+### 변경
+
+- 앱 배치 시 첫 AXWindow 대신 최대 면적 창(본창)을 선택
+  (`wait_for_main_window`) — 스플래시·유틸 패널 오배치로 본창이 다른
+  모니터에 남던 문제 대응.
+- 앱 배치 0.7s 후 1회 재적용: 이전 위치를 비동기 복원하는 앱(KakaoTalk
+  등)이 스냅을 되돌리는 문제 대응.
+- 문서 배치 0.6s 후 1회 재적용: 뷰어가 문서 로드 후 창 크기를 재조정해
+  전체 화면 프레임이 풀리던 문제 대응.
+- 재스택을 대기 없는 수렴 방식으로 재설계: 즉시 1차 정렬 후, 백그라운드
+  가디언 스레드가 최대 7s 동안 400ms 간격으로 감시하다 늦게 창을 만든
+  앱이 생기면 그때만 시퀀스를 재실행하고 마지막에 1회 확정. 콜드 런치
+  완료 시 자기 활성화가 스택 순서를 덮어쓰던 레이스를 지연 추가 없이 제거.
+
+### 검증
+
+- cargo test 55개, clippy `-D warnings` 통과. 라이브 검증은 사용자 확인.
+
+## 2026-07-05 (fix/trust-probe-and-hotplug)
+
+### 변경
+
+- 권한 판정을 실제 제어 프로브로 교체: `AXIsProcessTrusted` 가 유령 TCC
+  항목 때문에 true 를 반환해도 시스템와이드 AX 읽기가 차단되면 미승인으로
+  판정 (`control_probe_ok`). 차단 상태에서 배치가 타임아웃으로 위장되던
+  문제의 근본 원인 제거.
+- `repair_accessibility_permission` 커맨드: 자체 TCC 항목을 `tccutil
+  reset` 으로 제거 후 재프롬프트. 배너·설정의 권한 버튼이 이 경로 사용 —
+  재빌드로 무효화된 유령 승인 상태를 사용자가 클릭 한 번으로 복구.
+- 디스플레이 목록 실시간 갱신: 편집기에서 5s 폴링 + 창 포커스 시 재조회.
+  모니터 연결 해제·연결이 즉시 반영.
+- 미니맵을 고정 200×64 박스 + 내부 letterbox 정규화 좌표로 변경 — 컨테이너
+  와 자식 지오메트리 불일치로 인한 레이아웃 붕괴 원천 차단.
+- 재스택 가디언에 고정 재확정 시점(1.6s/3.6s) 추가: AX 차단 등으로 창
+  준비 감지가 불가능한 경우에도 순서를 재확정.
+
+### 검증
+
+- cargo test 55개, clippy `-D warnings`, tsc/vite 빌드 통과.
+
+## 2026-07-05 (fix/offline-display-placements)
+
+### 변경
+
+- 연결되지 않은 모니터에 저장된 배치를 UI 에서 숨김 처리 (데이터 보존,
+  재연결 시 자동 복귀). 기존에는 디스플레이가 1개면 필터가 꺼져 다른
+  모니터의 배치가 현재 화면에 합쳐져 표시됐음.
+- 액션 리스트 하단에 "N개 배치는 연결되지 않은 모니터의 것" 안내 추가.
+- 실행 시 대상 모니터 미연결 액션은 통째로 건너뜀 (`display_connected`,
+  로그에 skipped 표기) — 그 모니터 전용 세팅이므로 다른 화면에서 열지 않음.
+
+### 검증
+
+- cargo test 55개, clippy, tsc/vite 빌드 통과.
+
+## 2026-07-05 (fix/doc-placement)
+
+### 변경
+
+- 문서 배치 대상 앱을 LaunchServices 조회(`NSWorkspace
+  URLForApplicationToOpenURL`)로 확정 — 최전면 앱 추측(osascript) 은
+  핸들러 미확인 시의 폴백으로 강등. System Events 자동화 권한 의존 제거.
+- 뷰어가 문서 로드 후 창을 재조정하는 문제에 대응해 프레임을 3회 적용
+  (즉시 / +0.6s / +1.4s).
+
+### 검증
+
+- cargo test 55개, clippy 통과. 라이브 검증은 사용자 확인.
+
+## 2026-07-05 (release 0.1.2)
+
+### 변경
+
+- 버전 0.1.2 (tauri.conf / Cargo.toml / 설정 화면 표기).
+- 포함 픽스: fix/placement-races, fix/trust-probe-and-hotplug,
+  fix/offline-display-placements, fix/doc-placement.
+
+### 기록
+
+- 릴리즈 앱 프로세스명은 `vibe` — 재설치 시
+  `pkill -f "V.I.B.E.app/Contents/MacOS/vibe"` 후 프로세스 시작 시각으로
+  교체 검증. 옛 인스턴스가 살아 있으면 `open` 이 구버전만 활성화함.

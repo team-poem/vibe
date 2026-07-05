@@ -8,6 +8,7 @@ import {
   checkAccessibilityPermission,
   fetchDisplays,
   fetchInstalledApps,
+  repairAccessibilityPermission,
   restartApp,
 } from "../api";
 import {
@@ -61,9 +62,20 @@ export const RoutineEditor = ({
         setDisplays(connectedDisplays);
       }
     }
+    async function refreshDisplays() {
+      const connectedDisplays = await fetchDisplays();
+      if (!cancelled) {
+        setDisplays(connectedDisplays);
+      }
+    }
     void loadEditorContext();
+    // Displays hot-plug at any time; keep the picker in sync.
+    const timer = window.setInterval(refreshDisplays, DISPLAY_REFRESH_MS);
+    window.addEventListener("focus", refreshDisplays);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshDisplays);
     };
   }, []);
 
@@ -86,9 +98,17 @@ export const RoutineEditor = ({
     .filter(
       ({ action }) =>
         Boolean(action.region) &&
-        (displays.length < 2 ||
-          targetDisplayOf(action) === (viewedDisplay?.id ?? mainDisplayId)),
+        targetDisplayOf(action) === (viewedDisplay?.id ?? mainDisplayId),
     );
+
+  // Placements saved for a display that is not currently connected are
+  // hidden (never deleted) and come back when it reconnects.
+  const offlinePlacementCount = draft.actions.filter(
+    (action) =>
+      action.region &&
+      action.display != null &&
+      !displays.some((d) => d.id === action.display),
+  ).length;
 
   // The split tab follows the viewed display: derived from what is placed
   // there, and manual choices are remembered per display.
@@ -119,12 +139,9 @@ export const RoutineEditor = ({
     const viewedId = viewedDisplay?.id ?? mainDisplayId;
     draft.actions.forEach((action, index) => {
       // The tab bar scopes the list: only this display's stacks are shown
-      // (unplaced actions always are).
-      if (
-        action.region &&
-        displays.length > 1 &&
-        targetDisplayOf(action) !== viewedId
-      ) {
+      // (unplaced actions always are). Disconnected displays' placements
+      // are hidden here and surfaced by the offline note below.
+      if (action.region && targetDisplayOf(action) !== viewedId) {
         return;
       }
       const key = groupKeyOf(action);
@@ -426,6 +443,13 @@ export const RoutineEditor = ({
             ))}
           </div>
 
+          {offlinePlacementCount > 0 && (
+            <p className="editorHint offlineNote">
+              {offlinePlacementCount}
+              {t("editor.offlinePlacements")}
+            </p>
+          )}
+
           <div className="addActionRow">
             <button
               type="button"
@@ -464,6 +488,7 @@ export const RoutineEditor = ({
 
 const SAVED_FLASH_MS = 1400;
 const AUTOSAVE_DELAY_MS = 600;
+const DISPLAY_REFRESH_MS = 5000;
 
 /// Deleting is two-step: the first click arms the button, the second
 /// within a few seconds actually deletes.
@@ -765,15 +790,13 @@ const DisplayArrangement = ({
     ARRANGEMENT_MAX_WIDTH / (maxX - minX),
     ARRANGEMENT_MAX_HEIGHT / (maxY - minY),
   );
+  // Fixed-size box with the arrangement letterboxed inside — the container
+  // can never disagree with its absolutely-positioned children.
+  const offsetX = (ARRANGEMENT_MAX_WIDTH - (maxX - minX) * scale) / 2;
+  const offsetY = (ARRANGEMENT_MAX_HEIGHT - (maxY - minY) * scale) / 2;
 
   return (
-    <div
-      className="displayArrangement"
-      style={{
-        width: (maxX - minX) * scale,
-        height: (maxY - minY) * scale,
-      }}
-    >
+    <div className="displayArrangement">
       {displays.map((display, order) => {
         const isSelected =
           selectedId === display.id || (selectedId === null && display.isMain);
@@ -783,8 +806,8 @@ const DisplayArrangement = ({
             type="button"
             className={isSelected ? "displayRect selected" : "displayRect"}
             style={{
-              left: (display.x - minX) * scale,
-              top: (display.y - minY) * scale,
+              left: offsetX + (display.x - minX) * scale,
+              top: offsetY + (display.y - minY) * scale,
               width: display.width * scale,
               height: display.height * scale,
             }}
@@ -835,7 +858,7 @@ const PlacementPermissionHint = ({ needed }: { needed: boolean }) => {
   }
 
   async function handleEnableClick() {
-    setGranted(await checkAccessibilityPermission(true));
+    setGranted(await repairAccessibilityPermission());
   }
 
   return (

@@ -30,6 +30,18 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     let mut app_placements: Vec<usize> = Vec::new();
 
     for (index, action) in actions.iter().enumerate() {
+        // A placement bound to a disconnected display is that display's
+        // setup — skip the whole action rather than opening it anywhere.
+        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
+            if !layout::display_connected(display_id) {
+                outcomes[index] = ActionOutcome {
+                    label: action.to_string(),
+                    success: true,
+                    detail: "skipped — target display not connected".to_owned(),
+                };
+                continue;
+            }
+        }
         match action {
             Action::OpenUrl {
                 region: Some(_), ..
@@ -66,8 +78,18 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     }
 
     // URLs sharing a display+region open together: one new browser window
-    // per target, each URL a tab of it.
+    // per target, each URL a tab of it. Targets on a disconnected display
+    // open plainly instead of being forced onto another screen.
     for ((display_id, region), indices) in group_by_target(actions, &deferred_urls) {
+        if let Some(id) = display_id {
+            if !layout::display_connected(id) {
+                for &i in &indices {
+                    outcomes[i] = run_outcome(&actions[i]);
+                    append_detail(&mut outcomes[i], "target display not connected");
+                }
+                continue;
+            }
+        }
         let display = layout::display_frame(display_id);
         let urls: Vec<&str> = indices
             .iter()
@@ -103,11 +125,17 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         }
     }
 
-    for index in app_placements {
+    for &index in &app_placements {
         let action = &actions[index];
         let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
             continue;
         };
+        if let Some(id) = action.display() {
+            if !layout::display_connected(id) {
+                append_detail(&mut outcomes[index], "target display not connected");
+                continue;
+            }
+        }
         let display = layout::display_frame(action.display());
         match layout::place_app_window(name, region, display) {
             Ok(placement) => {
@@ -126,6 +154,25 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         }
     }
 
+    // Apps that restore their previous window position do so asynchronously
+    // after launch, undoing the snap — settle, then re-apply once.
+    if !app_placements.is_empty() {
+        std::thread::sleep(Duration::from_millis(700));
+        for &index in &app_placements {
+            let action = &actions[index];
+            let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
+                continue;
+            };
+            if let Some(id) = action.display() {
+                if !layout::display_connected(id) {
+                    continue;
+                }
+            }
+            let display = layout::display_frame(action.display());
+            let _ = layout::place_app_window(name, region, display);
+        }
+    }
+
     // Documents open with an unknown handler app, so each one is opened
     // and placed sequentially using the frontmost-app heuristic.
     for index in deferred_files {
@@ -133,6 +180,13 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         let (Action::OpenFile { path, .. }, Some(region)) = (action, action.region()) else {
             continue;
         };
+        if let Some(id) = action.display() {
+            if !layout::display_connected(id) {
+                outcomes[index] = run_outcome(action);
+                append_detail(&mut outcomes[index], "target display not connected");
+                continue;
+            }
+        }
         let display = layout::display_frame(action.display());
         outcomes[index] = match layout::open_file_in_placed_window(path, region, display) {
             Ok(placement) => {
@@ -165,6 +219,11 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
 fn restack_frontmost_first(actions: &[Action]) {
     let mut entries: Vec<(String, usize)> = Vec::new();
     for (index, action) in actions.iter().enumerate() {
+        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
+            if !layout::display_connected(display_id) {
+                continue;
+            }
+        }
         let app_name = match action {
             Action::OpenApp { name, .. } => Some(name.clone()),
             Action::OpenUrl {
@@ -182,13 +241,58 @@ fn restack_frontmost_first(actions: &[Action]) {
         return;
     }
     entries.sort_by_key(|(_, index)| std::cmp::Reverse(*index));
+
+    // Immediate pass: order whatever is already up — no waiting.
+    activate_in_order(&entries);
+
+    // A cold-launching app activates itself when it finishes, overriding
+    // the order. Instead of blocking on the slowest launch, a short-lived
+    // guardian re-asserts the sequence whenever a late app's window
+    // appears, then once more at the end.
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let deadline = started + RESTACK_GUARD_WINDOW;
+        let mut fixed_marks = [1600u128, 3600].into_iter().peekable();
+        let mut ready: Vec<bool> = entries
+            .iter()
+            .map(|(name, _)| layout::app_window_ready(name))
+            .collect();
+        while std::time::Instant::now() < deadline && ready.contains(&false) {
+            std::thread::sleep(RESTACK_GUARD_POLL);
+            let mut reassert = false;
+            for (slot, (name, _)) in ready.iter_mut().zip(entries.iter()) {
+                if !*slot && layout::app_window_ready(name) {
+                    *slot = true;
+                    reassert = true;
+                }
+            }
+            // Fixed re-assert marks cover the case where window readiness
+            // cannot be observed (e.g. AX access blocked).
+            if let Some(&mark) = fixed_marks.peek() {
+                if started.elapsed().as_millis() >= mark {
+                    fixed_marks.next();
+                    reassert = true;
+                }
+            }
+            if reassert {
+                activate_in_order(&entries);
+            }
+        }
+        activate_in_order(&entries);
+    });
+}
+
+const RESTACK_GUARD_WINDOW: Duration = Duration::from_secs(7);
+const RESTACK_GUARD_POLL: Duration = Duration::from_millis(400);
+
+fn activate_in_order(entries: &[(String, usize)]) {
     for (app_name, _) in entries {
         let _ = Command::new("open")
-            .args(["-a", &app_name])
+            .args(["-a", app_name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        std::thread::sleep(Duration::from_millis(150));
+        std::thread::sleep(Duration::from_millis(120));
     }
 }
 

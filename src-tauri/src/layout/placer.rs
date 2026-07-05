@@ -31,7 +31,7 @@ pub enum LayoutError {
 }
 
 pub fn is_trusted(prompt: bool) -> bool {
-    ax::is_process_trusted(prompt)
+    ax::is_process_trusted(prompt) && ax::control_probe_ok()
 }
 
 /// Snap the front window of a (just launched or already running) app to a
@@ -47,8 +47,48 @@ pub fn place_app_window(
     }
     let pid = wait_for_pid(app_name)?;
     let app = ax::application_element(pid);
-    let window = wait_for_window(&app, &[], app_name)?;
+    let window = wait_for_main_window(&app, app_name)?;
     apply_placement(&window, region, display)
+}
+
+/// Wait until the app has windows, then return the largest one — the first
+/// AX window can be a splash screen or utility panel, not the main window.
+fn wait_for_main_window(app: &ax::AxElement, label: &str) -> Result<ax::AxElement, LayoutError> {
+    let deadline = Instant::now() + WINDOW_WAIT_TIMEOUT;
+    loop {
+        if let Ok(windows) = ax::windows(app) {
+            if let Some(window) = pick_main_window(windows) {
+                return Ok(window);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(LayoutError::WindowTimeout(label.to_owned()));
+        }
+        std::thread::sleep(WINDOW_POLL_INTERVAL);
+    }
+}
+
+fn pick_main_window(windows: Vec<ax::AxElement>) -> Option<ax::AxElement> {
+    windows
+        .into_iter()
+        .map(|window| {
+            let area = ax::window_size(&window)
+                .map(|size| size.width * size.height)
+                .unwrap_or(0.0);
+            (window, area)
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(window, _)| window)
+}
+
+/// Single non-blocking check: does the app have a window yet? Used by the
+/// restack guardian to react to slow launches without waiting for them.
+pub fn app_window_ready(app_name: &str) -> bool {
+    let Some(pid) = find_pid(app_name) else {
+        return false;
+    };
+    let app = ax::application_element(pid);
+    ax::windows(&app).map(|w| !w.is_empty()).unwrap_or(false)
 }
 
 /// Snap or, for `Centered`, move-only: the window keeps its natural size

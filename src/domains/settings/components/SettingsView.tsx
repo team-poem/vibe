@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   checkAccessibilityPermission,
   fetchAutostart,
+  repairAccessibilityPermission,
   setAutostartInSystem,
   testMicrophone,
 } from "../../routines/api";
@@ -10,7 +11,7 @@ import { useT } from "../../../shared/i18n/LanguageContext";
 import type { Language, MessageKey } from "../../../shared/i18n/messages";
 import type { ThemeSetting } from "../../../shared/theme";
 
-const APP_VERSION = "0.1.1";
+const APP_VERSION = "0.1.2";
 
 interface SettingsViewProps {
   language: Language;
@@ -228,7 +229,7 @@ const AccessibilityRow = () => {
   }, [granted]);
 
   async function handleEnableClick() {
-    setGranted(await checkAccessibilityPermission(true));
+    setGranted(await repairAccessibilityPermission());
   }
 
   return (
