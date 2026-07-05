@@ -2,8 +2,8 @@ mod ax;
 mod placer;
 
 pub use placer::{
-    is_trusted, open_file_in_placed_window, open_urls_in_placed_window, place_app_window,
-    LayoutError,
+    app_window_ready, is_trusted, open_file_in_placed_window, open_urls_in_placed_window,
+    place_app_window, LayoutError,
 };
 
 use core_graphics::display::CGDisplay;
