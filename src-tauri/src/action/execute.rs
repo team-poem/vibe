@@ -255,31 +255,57 @@ fn restack_frontmost_first(actions: &[Action]) {
     if entries.len() < 2 {
         return;
     }
+    // Without AX access there is no window readiness signal and no
+    // placement happened either — blind activation passes would only
+    // flash focus around, so skip restacking entirely.
+    if !layout::is_trusted(false) {
+        layout::log_place("[restack] skipped — accessibility not trusted");
+        return;
+    }
     entries.sort_by_key(|(_, index)| std::cmp::Reverse(*index));
 
     std::thread::spawn(move || {
-        let all_ready = |entries: &[(String, usize)]| {
+        let ready_flags = |entries: &[(String, usize)]| -> Vec<bool> {
             entries
                 .iter()
-                .all(|(name, _)| layout::app_window_ready(name))
+                .map(|(name, _)| layout::app_window_ready(name))
+                .collect()
         };
 
         let deadline = std::time::Instant::now() + RESTACK_READY_WAIT;
-        while std::time::Instant::now() < deadline && !all_ready(&entries) {
+        while std::time::Instant::now() < deadline && ready_flags(&entries).contains(&false) {
             std::thread::sleep(RESTACK_POLL);
         }
         activate_in_order(&entries);
 
-        if all_ready(&entries) {
+        let after_first = ready_flags(&entries);
+        if !after_first.contains(&false) {
             return;
         }
-        // Stragglers past the wait: give them one more window, then a
-        // single corrective pass.
+        // Stragglers past the wait: fire one corrective pass only if one
+        // of them actually shows up — a blanket retry when nothing changed
+        // is just another focus flash.
         let deadline = std::time::Instant::now() + RESTACK_STRAGGLER_WAIT;
-        while std::time::Instant::now() < deadline && !all_ready(&entries) {
+        let mut became_ready = false;
+        while std::time::Instant::now() < deadline {
             std::thread::sleep(RESTACK_POLL);
+            let now = ready_flags(&entries);
+            if now
+                .iter()
+                .zip(after_first.iter())
+                .any(|(now, before)| *now && !*before)
+            {
+                became_ready = true;
+                if !now.contains(&false) {
+                    break;
+                }
+            }
         }
-        activate_in_order(&entries);
+        if became_ready {
+            activate_in_order(&entries);
+        } else {
+            layout::log_place("[restack] straggler pass skipped — nothing became ready");
+        }
     });
 }
 
