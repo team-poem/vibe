@@ -1272,3 +1272,33 @@ Performance Pass, 다중 모니터.
 - 릴리즈 앱 프로세스명은 `vibe` — 재설치 시
   `pkill -f "V.I.B.E.app/Contents/MacOS/vibe"` 후 프로세스 시작 시각으로
   교체 검증. 옛 인스턴스가 살아 있으면 `open` 이 구버전만 활성화함.
+
+## 2026-07-05 (fix/doc-fullscreen-stable)
+
+### 배경
+
+- 0.1.2 의 fix/doc-placement 커밋(18321f0)은 패치 스크립트의 문자열 매칭
+  실패로 placer.rs 변경이 누락된 채 history/Cargo.toml 만 커밋됨 — 문서
+  전체화면 픽스가 실제로는 배포되지 않았음. 이번 브랜치가 실 구현을 반영.
+
+### 변경
+
+- `default_handler_app`: LaunchServices(`NSWorkspace
+  URLForApplicationToOpenURL`)로 문서 핸들러 앱을 확정. osascript
+  frontmost 추측은 핸들러 미확인 시 폴백으로만 사용.
+- 핸들러 앱의 기존 창을 스냅샷 후 `open`, 새로 생긴(스냅샷에 없는) 창을
+  우선 타겟팅 (`pick_target_window`) — 이미 열린 창이 아닌 새 문서 창을
+  배치.
+- 고정 3회 재적용을 `place_until_stable` 검증 루프로 교체: 배치 적용 후
+  350ms 간격으로 실제 창 프레임(`ax::window_frame`)을 목표 프레임과 비교
+  (허용 오차 2px), 2회 연속 일치 시 종료, 최대 4초. 뷰어가 문서 로드 후
+  임의 시점에 창을 재조정해도 수렴할 때까지 다시 적용.
+- ax.rs 에 `window_frame`/`window_position` 게터 추가
+  (kAXPositionAttribute + AXValueGetValue).
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 55개 통과.
+- 커밋 전 `place_until_stable`·`default_handler_app` 심볼 존재를 grep 으로
+  확인 (18321f0 무늬만 커밋 재발 방지).
+- 라이브 반복 검증은 사용자 확인.

@@ -161,11 +161,13 @@ pub fn open_urls_in_placed_window(
     apply_placement(&window, region, display)
 }
 
-/// Open a document with its default app and snap that app's front window.
+/// Open a document with its default app and snap that app's window.
 ///
-/// The handler app is unknown ahead of time, so after opening we ask System
-/// Events for the frontmost process (this may show the macOS Automation
-/// consent dialog once) and place its front window.
+/// LaunchServices resolves which app will handle the file, so the exact
+/// viewer is targeted instead of guessing from focus (osascript frontmost
+/// remains only as a fallback). Viewers re-fit their window after the
+/// document loads at unpredictable times, so the frame is verified against
+/// the window's actual frame and re-applied until it sticks.
 pub fn open_file_in_placed_window(
     path: &str,
     region: Region,
@@ -174,6 +176,13 @@ pub fn open_file_in_placed_window(
     if !is_trusted(false) {
         return Err(LayoutError::NotTrusted);
     }
+    let handler = default_handler_app(path);
+    let snapshot = handler
+        .as_deref()
+        .and_then(find_pid)
+        .map(|pid| ax::windows(&ax::application_element(pid)).unwrap_or_default())
+        .unwrap_or_default();
+
     Command::new("open")
         .arg(path)
         .stdout(Stdio::null())
@@ -183,13 +192,109 @@ pub fn open_file_in_placed_window(
             command: "open <file>",
             source,
         })?;
-    std::thread::sleep(Duration::from_millis(900));
 
-    let pid =
-        frontmost_pid().ok_or_else(|| LayoutError::AppNotFound("frontmost app".to_owned()))?;
+    let pid = match &handler {
+        Some(app_name) => wait_for_pid(app_name)?,
+        None => {
+            std::thread::sleep(Duration::from_millis(900));
+            frontmost_pid().ok_or_else(|| LayoutError::AppNotFound("frontmost app".to_owned()))?
+        }
+    };
     let app = ax::application_element(pid);
-    let window = wait_for_window(&app, &[], "document viewer")?;
-    Ok(ax::set_window_frame(&window, region.frame(display))?)
+    let label = handler.as_deref().unwrap_or("document viewer");
+    place_until_stable(&app, &snapshot, label, region, display)
+}
+
+/// App that LaunchServices would use to open `path`, by bundle name.
+fn default_handler_app(path: &str) -> Option<String> {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSString, NSURL};
+
+    let file_url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    let workspace = NSWorkspace::sharedWorkspace();
+    let app_url = workspace.URLForApplicationToOpenURL(&file_url)?;
+    let app_path = app_url.path()?.to_string();
+    let bundle_name = std::path::Path::new(&app_path)
+        .file_name()?
+        .to_string_lossy();
+    bundle_name.strip_suffix(".app").map(str::to_owned)
+}
+
+const STABLE_DEADLINE: Duration = Duration::from_secs(4);
+const STABLE_POLL: Duration = Duration::from_millis(350);
+const FRAME_TOLERANCE: f64 = 2.0;
+
+/// Apply the frame, then keep verifying against the window's actual frame
+/// until it holds for two consecutive checks — fixed re-apply delays lose
+/// races against the viewer's own re-fitting.
+fn place_until_stable(
+    app: &ax::AxElement,
+    snapshot: &[ax::AxElement],
+    label: &str,
+    region: Region,
+    display: CGRect,
+) -> Result<Placement, LayoutError> {
+    let deadline = Instant::now() + STABLE_DEADLINE;
+    let target = region.frame(display);
+    let mut last: Option<Placement> = None;
+    let mut stable = 0;
+
+    while Instant::now() < deadline {
+        let Ok(window) = pick_target_window(app, snapshot, label) else {
+            std::thread::sleep(STABLE_POLL);
+            continue;
+        };
+        if let Ok(placement) = apply_placement(&window, region, display) {
+            last = Some(placement);
+        }
+        std::thread::sleep(STABLE_POLL);
+
+        let settled = match last {
+            // Centered / fixed-size windows never match the target frame;
+            // a successful apply counts as settled.
+            Some(Placement::MovedOnly) => true,
+            Some(Placement::Full) => ax::window_frame(&window)
+                .map(|frame| frames_close(frame, target))
+                .unwrap_or(false),
+            None => false,
+        };
+        if settled {
+            stable += 1;
+            if stable >= 2 {
+                break;
+            }
+        } else {
+            stable = 0;
+        }
+    }
+    last.ok_or_else(|| LayoutError::WindowTimeout(label.to_owned()))
+}
+
+fn frames_close(a: CGRect, b: CGRect) -> bool {
+    (a.origin.x - b.origin.x).abs() <= FRAME_TOLERANCE
+        && (a.origin.y - b.origin.y).abs() <= FRAME_TOLERANCE
+        && (a.size.width - b.size.width).abs() <= FRAME_TOLERANCE
+        && (a.size.height - b.size.height).abs() <= FRAME_TOLERANCE
+}
+
+/// Prefer a window that did not exist before the document was opened
+/// (largest of the fresh ones); fall back to the app's main window when
+/// the viewer reused an existing window or tab.
+fn pick_target_window(
+    app: &ax::AxElement,
+    snapshot: &[ax::AxElement],
+    label: &str,
+) -> Result<ax::AxElement, LayoutError> {
+    if let Ok(windows) = ax::windows(app) {
+        let fresh: Vec<ax::AxElement> = windows
+            .into_iter()
+            .filter(|w| !snapshot.iter().any(|old| ax::same_element(w, old)))
+            .collect();
+        if let Some(window) = pick_main_window(fresh) {
+            return Ok(window);
+        }
+    }
+    wait_for_main_window(app, label)
 }
 
 fn frontmost_pid() -> Option<i32> {
