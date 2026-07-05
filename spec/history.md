@@ -1207,3 +1207,25 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - cargo test 55개, clippy `-D warnings` 통과. 라이브 검증은 사용자 확인.
+
+## 2026-07-05 (fix/trust-probe-and-hotplug)
+
+### 변경
+
+- 권한 판정을 실제 제어 프로브로 교체: `AXIsProcessTrusted` 가 유령 TCC
+  항목 때문에 true 를 반환해도 시스템와이드 AX 읽기가 차단되면 미승인으로
+  판정 (`control_probe_ok`). 차단 상태에서 배치가 타임아웃으로 위장되던
+  문제의 근본 원인 제거.
+- `repair_accessibility_permission` 커맨드: 자체 TCC 항목을 `tccutil
+  reset` 으로 제거 후 재프롬프트. 배너·설정의 권한 버튼이 이 경로 사용 —
+  재빌드로 무효화된 유령 승인 상태를 사용자가 클릭 한 번으로 복구.
+- 디스플레이 목록 실시간 갱신: 편집기에서 5s 폴링 + 창 포커스 시 재조회.
+  모니터 연결 해제·연결이 즉시 반영.
+- 미니맵을 고정 200×64 박스 + 내부 letterbox 정규화 좌표로 변경 — 컨테이너
+  와 자식 지오메트리 불일치로 인한 레이아웃 붕괴 원천 차단.
+- 재스택 가디언에 고정 재확정 시점(1.6s/3.6s) 추가: AX 차단 등으로 창
+  준비 감지가 불가능한 경우에도 순서를 재확정.
+
+### 검증
+
+- cargo test 55개, clippy `-D warnings`, tsc/vite 빌드 통과.

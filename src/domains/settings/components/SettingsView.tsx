@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   checkAccessibilityPermission,
   fetchAutostart,
+  repairAccessibilityPermission,
   setAutostartInSystem,
   testMicrophone,
 } from "../../routines/api";
@@ -228,7 +229,7 @@ const AccessibilityRow = () => {
   }, [granted]);
 
   async function handleEnableClick() {
-    setGranted(await checkAccessibilityPermission(true));
+    setGranted(await repairAccessibilityPermission());
   }
 
   return (
