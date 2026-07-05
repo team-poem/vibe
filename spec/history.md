@@ -1334,3 +1334,12 @@ Performance Pass, 다중 모니터.
   tsc/vite 빌드 통과.
 - 기본값이 medium 으로 완화되므로 설치 직후부터 인식률 개선 기대.
   오검출 증가 여부는 사용자 라이브 확인.
+
+## 2026-07-05 (release 0.1.3)
+
+### 변경
+
+- 버전 0.1.3 (tauri.conf / Cargo.toml / 설정 화면 표기).
+- 포함 변경: fix/doc-fullscreen-stable (문서 배치 verify-until-stable —
+  0.1.2 에서 누락 배포된 실 구현), feat/clap-sensitivity (박수 감도
+  낮음/보통/높음 설정, 기본 튜닝 완화).

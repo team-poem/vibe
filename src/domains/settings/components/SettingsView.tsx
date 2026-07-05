@@ -12,7 +12,7 @@ import type { Language, MessageKey } from "../../../shared/i18n/messages";
 import type { ThemeSetting } from "../../../shared/theme";
 import type { ClapSensitivity } from "../../routines/types";
 
-const APP_VERSION = "0.1.2";
+const APP_VERSION = "0.1.3";
 
 interface SettingsViewProps {
   language: Language;
