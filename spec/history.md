@@ -1373,3 +1373,27 @@ Performance Pass, 다중 모니터.
 
 - cargo fmt / clippy(-D warnings) / test 58개 통과.
 - 라이브 재현 시나리오(문서 열기 → 닫기 → 재실행) 검증은 사용자 확인.
+
+## 2026-07-05 (fix/doc-warm-reopen — 진단 라운드)
+
+### 배경
+
+- fix/doc-refit-guardian 이후에도 문서 전체화면 실패 리포트. 재현 시도:
+  단일 문서 루틴과 실제 루틴(9액션, 단일 모니터) 모두에서 콜드/웜(창
+  닫고 재실행) 시나리오를 스피커 더블클랩 재생으로 구동 — 전부 정상
+  배치 확인 (frame == target 1710x1073, 가디언 드리프트 0회). 로컬
+  재현 불가로 판단.
+
+### 변경
+
+- 배치 진단 로그를 stdout 출력과 동시에
+  `~/Library/Application Support/com.vibe.app/placement.log` 에 append
+  하는 `log_place` 추가 — Finder 실행에서도 실패 순간의 핸들러/스냅샷/
+  프레임/재적용 기록 확보 가능.
+- `place_until_stable` 루프별 apply 결과·실측 프레임, 가디언 드리프트
+  재적용, 핸들러 해석 결과를 기록.
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 통과. 콜드/웜 시나리오에서
+  로그 파일 기록 동작 확인. 실패 재현 로그는 사용자 확보 대기.

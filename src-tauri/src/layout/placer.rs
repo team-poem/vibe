@@ -34,6 +34,31 @@ pub fn is_trusted(prompt: bool) -> bool {
     ax::is_process_trusted(prompt) && ax::control_probe_ok()
 }
 
+/// Print a placement diagnostic and append it to
+/// `~/Library/Application Support/com.vibe.app/placement.log`, so failures
+/// on end-user machines can be diagnosed regardless of how the app was
+/// launched (Finder launches discard stdout).
+pub fn log_place(line: &str) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let stamped = format!("[{secs}] {line}");
+    println!("{stamped}");
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let path = format!("{home}/Library/Application Support/com.vibe.app/placement.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{stamped}");
+    }
+}
+
 /// Snap the front window of a (just launched or already running) app to a
 /// region. The front window is intentional here: for app actions the user
 /// wants "that app's window" in the region, new or not.
@@ -202,6 +227,10 @@ pub fn open_file_in_placed_window(
     };
     let app = ax::application_element(pid);
     let label = handler.as_deref().unwrap_or("document viewer");
+    log_place(&format!(
+        "[place:file] handler={handler:?} pid={pid} snapshot_windows={}",
+        snapshot.len()
+    ));
     let placement = place_until_stable(&app, &snapshot, label, region, display)?;
     // Viewers can still re-fit the window to the document after placement
     // looked settled — typical on warm re-open, where macOS restores the
@@ -231,15 +260,21 @@ fn spawn_refit_guardian(
         while Instant::now() < deadline {
             std::thread::sleep(REFIT_GUARD_POLL);
             let Some(window) = current_target_window(&app, &snapshot) else {
+                log_place("[place:guard] no window");
                 continue;
             };
-            let drifted = ax::window_frame(&window)
+            let frame = ax::window_frame(&window);
+            let drifted = frame
                 .map(|frame| !frames_close(frame, target))
                 .unwrap_or(false);
             if drifted {
-                let _ = ax::set_window_frame(&window, target);
+                let result = ax::set_window_frame(&window, target);
+                log_place(&format!(
+                    "[place:guard] drift frame={frame:?} → re-assert {result:?}"
+                ));
             }
         }
+        log_place("[place:guard] done");
     });
 }
 
@@ -279,13 +314,19 @@ fn place_until_stable(
 
     while Instant::now() < deadline {
         let Ok(window) = pick_target_window(app, snapshot, label) else {
+            log_place("[place:file] no target window yet");
             std::thread::sleep(STABLE_POLL);
             continue;
         };
-        if let Ok(placement) = apply_placement(&window, region, display) {
+        let apply = apply_placement(&window, region, display);
+        if let Ok(placement) = apply {
             last = Some(placement);
         }
         std::thread::sleep(STABLE_POLL);
+        log_place(&format!(
+            "[place:file] apply={apply:?} frame={:?} target={target:?}",
+            ax::window_frame(&window)
+        ));
 
         let settled = match last {
             // Centered keeps the window's natural size, so a successful
