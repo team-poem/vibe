@@ -31,7 +31,7 @@ pub enum LayoutError {
 }
 
 pub fn is_trusted(prompt: bool) -> bool {
-    ax::is_process_trusted(prompt)
+    ax::is_process_trusted(prompt) && ax::control_probe_ok()
 }
 
 /// Snap the front window of a (just launched or already running) app to a

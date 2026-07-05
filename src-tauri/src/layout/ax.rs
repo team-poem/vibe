@@ -5,9 +5,10 @@
 use std::ffi::c_void;
 
 use accessibility_sys::{
-    kAXErrorSuccess, kAXPositionAttribute, kAXSizeAttribute, kAXTrustedCheckOptionPrompt,
-    kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowsAttribute, AXIsProcessTrusted,
-    AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
+    kAXErrorAPIDisabled, kAXErrorCannotComplete, kAXErrorSuccess, kAXFocusedApplicationAttribute,
+    kAXPositionAttribute, kAXSizeAttribute, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint,
+    kAXValueTypeCGSize, kAXWindowsAttribute, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
+    AXUIElementCopyAttributeValue, AXUIElementCreateApplication, AXUIElementCreateSystemWide,
     AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate, AXValueGetValue, AXValueRef,
 };
 use core_foundation::array::CFArray;
@@ -48,6 +49,25 @@ pub fn is_process_trusted(prompt: bool) -> bool {
             CFBoolean::true_value().as_CFType(),
         )]);
         AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef())
+    }
+}
+
+/// A stale TCC entry can make `AXIsProcessTrusted` return true while every
+/// actual control call is blocked (macOS shows a "blocked from modifying
+/// apps" notification instead). Probe with a real read so trust reporting
+/// matches reality.
+pub fn control_probe_ok() -> bool {
+    unsafe {
+        let system_wide = AXUIElementCreateSystemWide();
+        let name = CFString::new(kAXFocusedApplicationAttribute);
+        let mut value: CFTypeRef = std::ptr::null();
+        let code =
+            AXUIElementCopyAttributeValue(system_wide, name.as_concrete_TypeRef(), &mut value);
+        if !value.is_null() {
+            CFRelease(value);
+        }
+        CFRelease(system_wide as CFTypeRef);
+        code != kAXErrorAPIDisabled && code != kAXErrorCannotComplete
     }
 }
 

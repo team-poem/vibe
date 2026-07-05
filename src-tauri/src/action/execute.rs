@@ -205,21 +205,31 @@ fn restack_frontmost_first(actions: &[Action]) {
     // guardian re-asserts the sequence whenever a late app's window
     // appears, then once more at the end.
     std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + RESTACK_GUARD_WINDOW;
+        let started = std::time::Instant::now();
+        let deadline = started + RESTACK_GUARD_WINDOW;
+        let mut fixed_marks = [1600u128, 3600].into_iter().peekable();
         let mut ready: Vec<bool> = entries
             .iter()
             .map(|(name, _)| layout::app_window_ready(name))
             .collect();
         while std::time::Instant::now() < deadline && ready.contains(&false) {
             std::thread::sleep(RESTACK_GUARD_POLL);
-            let mut newly_ready = false;
+            let mut reassert = false;
             for (slot, (name, _)) in ready.iter_mut().zip(entries.iter()) {
                 if !*slot && layout::app_window_ready(name) {
                     *slot = true;
-                    newly_ready = true;
+                    reassert = true;
                 }
             }
-            if newly_ready {
+            // Fixed re-assert marks cover the case where window readiness
+            // cannot be observed (e.g. AX access blocked).
+            if let Some(&mark) = fixed_marks.peek() {
+                if started.elapsed().as_millis() >= mark {
+                    fixed_marks.next();
+                    reassert = true;
+                }
+            }
+            if reassert {
                 activate_in_order(&entries);
             }
         }
