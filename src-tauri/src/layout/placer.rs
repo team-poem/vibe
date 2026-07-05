@@ -290,7 +290,42 @@ fn spawn_refit_guardian(
     });
 }
 
+/// Re-apply an app placement only if its window drifted off target —
+/// called once after the settle delay, without making settled windows jump.
+pub fn reassert_app_placement(app_name: &str, region: Region, display: CGRect) {
+    // A centered window keeps its natural size; after the initial move any
+    // further correction would fight the app's own geometry.
+    if region == Region::Centered {
+        return;
+    }
+    let Some(pid) = find_pid(app_name) else {
+        return;
+    };
+    let app = ax::application_element(pid);
+    let Ok(windows) = ax::windows(&app) else {
+        return;
+    };
+    let Some(window) = pick_main_window(windows) else {
+        return;
+    };
+    let target = region.frame(display);
+    let drifted = ax::window_frame(&window)
+        .map(|frame| !frames_close(frame, target))
+        .unwrap_or(false);
+    if drifted {
+        let result = ax::set_window_frame(&window, target);
+        log_place(&format!(
+            "[place:app] drift re-assert {app_name} → {result:?}"
+        ));
+    }
+}
+
 /// App that LaunchServices would use to open `path`, by bundle name.
+/// Public so the restack pass can order placed documents by their viewer.
+pub fn file_handler_app(path: &str) -> Option<String> {
+    default_handler_app(path)
+}
+
 fn default_handler_app(path: &str) -> Option<String> {
     use objc2_app_kit::NSWorkspace;
     use objc2_foundation::{NSString, NSURL};
@@ -330,35 +365,44 @@ fn place_until_stable(
             std::thread::sleep(STABLE_POLL);
             continue;
         };
-        let apply = apply_placement(&window, region, display);
-        if let Ok(placement) = apply {
-            last = Some(placement);
-        }
-        std::thread::sleep(STABLE_POLL);
-        log_place(&format!(
-            "[place:file] apply={apply:?} frame={:?} target={target:?}",
-            ax::window_frame(&window)
-        ));
 
-        let settled = match last {
-            // Centered keeps the window's natural size, so a successful
-            // move is final. For every other region a refused resize is
-            // not settled — keep re-applying until the deadline, because
-            // viewers transiently reject resizes while restoring windows.
-            Some(Placement::MovedOnly) => region == Region::Centered,
-            Some(Placement::Full) => ax::window_frame(&window)
-                .map(|frame| frames_close(frame, target))
-                .unwrap_or(false),
-            None => false,
-        };
-        if settled {
+        // Centered keeps the window's natural size: one successful move
+        // is final, and re-applying would just make the window twitch.
+        if region == Region::Centered {
+            let apply = apply_placement(&window, region, display);
+            log_place(&format!("[place:file] centered apply={apply:?}"));
+            if let Ok(placement) = apply {
+                return Ok(placement);
+            }
+            std::thread::sleep(STABLE_POLL);
+            continue;
+        }
+
+        // Only touch the window when its frame actually drifted — an
+        // unconditional re-apply makes correctly placed windows jitter.
+        let on_target = ax::window_frame(&window)
+            .map(|frame| frames_close(frame, target))
+            .unwrap_or(false);
+        if on_target {
+            if last.is_none() {
+                last = Some(Placement::Full);
+            }
             stable += 1;
             if stable >= 2 {
                 break;
             }
         } else {
             stable = 0;
+            let apply = apply_placement(&window, region, display);
+            log_place(&format!(
+                "[place:file] apply={apply:?} frame={:?} target={target:?}",
+                ax::window_frame(&window)
+            ));
+            if let Ok(placement) = apply {
+                last = Some(placement);
+            }
         }
+        std::thread::sleep(STABLE_POLL);
     }
     last.ok_or_else(|| LayoutError::WindowTimeout(label.to_owned()))
 }

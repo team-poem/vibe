@@ -157,7 +157,8 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     }
 
     // Apps that restore their previous window position do so asynchronously
-    // after launch, undoing the snap — settle, then re-apply once.
+    // after launch, undoing the snap — settle, then correct only windows
+    // that actually drifted, so settled ones never twitch.
     if !app_placements.is_empty() {
         std::thread::sleep(Duration::from_millis(700));
         for &index in &app_placements {
@@ -171,7 +172,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 }
             }
             let display = layout::display_frame(action.display());
-            let _ = layout::place_app_window(name, region, display);
+            layout::reassert_app_placement(name, region, display);
         }
     }
 
@@ -218,6 +219,11 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
 /// Bring windows into list order: the app of action #1 ends frontmost.
 /// Re-activating each owning app from the bottom of the list upwards gives
 /// that stacking without any window-level z-order API.
+///
+/// Every activation steals focus and visibly raises windows, so the whole
+/// pass runs at most twice: once after a short readiness wait (placements
+/// already ran, so this usually exits immediately), and once more only if
+/// an app finished launching after the first pass.
 fn restack_frontmost_first(actions: &[Action]) {
     let mut entries: Vec<(String, usize)> = Vec::new();
     for (index, action) in actions.iter().enumerate() {
@@ -231,6 +237,13 @@ fn restack_frontmost_first(actions: &[Action]) {
             Action::OpenUrl {
                 region: Some(_), ..
             } => Some("Google Chrome".to_owned()),
+            // Placed documents take part through their viewer app, so a
+            // late-activating viewer cannot end on top uninvited.
+            Action::OpenFile {
+                path,
+                region: Some(_),
+                ..
+            } => layout::file_handler_app(path),
             _ => None,
         };
         let Some(app_name) = app_name else { continue };
@@ -244,48 +257,35 @@ fn restack_frontmost_first(actions: &[Action]) {
     }
     entries.sort_by_key(|(_, index)| std::cmp::Reverse(*index));
 
-    // Immediate pass: order whatever is already up — no waiting.
-    activate_in_order(&entries);
-
-    // A cold-launching app activates itself when it finishes, overriding
-    // the order. Instead of blocking on the slowest launch, a short-lived
-    // guardian re-asserts the sequence whenever a late app's window
-    // appears, then once more at the end.
     std::thread::spawn(move || {
-        let started = std::time::Instant::now();
-        let deadline = started + RESTACK_GUARD_WINDOW;
-        let mut fixed_marks = [1600u128, 3600].into_iter().peekable();
-        let mut ready: Vec<bool> = entries
-            .iter()
-            .map(|(name, _)| layout::app_window_ready(name))
-            .collect();
-        while std::time::Instant::now() < deadline && ready.contains(&false) {
-            std::thread::sleep(RESTACK_GUARD_POLL);
-            let mut reassert = false;
-            for (slot, (name, _)) in ready.iter_mut().zip(entries.iter()) {
-                if !*slot && layout::app_window_ready(name) {
-                    *slot = true;
-                    reassert = true;
-                }
-            }
-            // Fixed re-assert marks cover the case where window readiness
-            // cannot be observed (e.g. AX access blocked).
-            if let Some(&mark) = fixed_marks.peek() {
-                if started.elapsed().as_millis() >= mark {
-                    fixed_marks.next();
-                    reassert = true;
-                }
-            }
-            if reassert {
-                activate_in_order(&entries);
-            }
+        let all_ready = |entries: &[(String, usize)]| {
+            entries
+                .iter()
+                .all(|(name, _)| layout::app_window_ready(name))
+        };
+
+        let deadline = std::time::Instant::now() + RESTACK_READY_WAIT;
+        while std::time::Instant::now() < deadline && !all_ready(&entries) {
+            std::thread::sleep(RESTACK_POLL);
+        }
+        activate_in_order(&entries);
+
+        if all_ready(&entries) {
+            return;
+        }
+        // Stragglers past the wait: give them one more window, then a
+        // single corrective pass.
+        let deadline = std::time::Instant::now() + RESTACK_STRAGGLER_WAIT;
+        while std::time::Instant::now() < deadline && !all_ready(&entries) {
+            std::thread::sleep(RESTACK_POLL);
         }
         activate_in_order(&entries);
     });
 }
 
-const RESTACK_GUARD_WINDOW: Duration = Duration::from_secs(7);
-const RESTACK_GUARD_POLL: Duration = Duration::from_millis(400);
+const RESTACK_READY_WAIT: Duration = Duration::from_secs(4);
+const RESTACK_STRAGGLER_WAIT: Duration = Duration::from_secs(6);
+const RESTACK_POLL: Duration = Duration::from_millis(200);
 
 fn activate_in_order(entries: &[(String, usize)]) {
     for (app_name, _) in entries {
