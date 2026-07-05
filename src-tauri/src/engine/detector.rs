@@ -1,6 +1,7 @@
 use crate::engine::event::ClapEvent;
 use crate::engine::features::{rms_db, FlatnessAnalyzer};
 use crate::engine::floor::AdaptiveFloor;
+use crate::engine::Sensitivity;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DetectorConfig {
@@ -17,7 +18,19 @@ pub struct DetectorConfig {
 
 impl Default for DetectorConfig {
     fn default() -> Self {
-        Self {
+        Self::for_sensitivity(Sensitivity::Medium)
+    }
+}
+
+impl DetectorConfig {
+    /// Tuning per sensitivity level. The gates that decide whether a burst
+    /// counts as a clap at all: how far above the noise floor the onset
+    /// must rise, how spectrally flat it must be, and how fast it must
+    /// decay. `Low` keeps the strict original tuning; `Medium` and `High`
+    /// relax the decay gate most, because reverberant rooms and microphone
+    /// auto-gain flatten the drop that gate looks for.
+    pub fn for_sensitivity(sensitivity: Sensitivity) -> Self {
+        let base = Self {
             frame_ms: 10.0,
             fft_size: 512,
             initial_floor_db: -60.0,
@@ -27,6 +40,25 @@ impl Default for DetectorConfig {
             decay_window_ms: 60.0,
             decay_drop_db: 20.0,
             refractory_ms: 120.0,
+        };
+        match sensitivity {
+            Sensitivity::Low => base,
+            Sensitivity::Medium => Self {
+                onset_threshold_db: 26.0,
+                flatness_threshold: 0.15,
+                decay_window_ms: 100.0,
+                decay_drop_db: 14.0,
+                refractory_ms: 110.0,
+                ..base
+            },
+            Sensitivity::High => Self {
+                onset_threshold_db: 21.0,
+                flatness_threshold: 0.12,
+                decay_window_ms: 140.0,
+                decay_drop_db: 10.0,
+                refractory_ms: 100.0,
+                ..base
+            },
         }
     }
 }

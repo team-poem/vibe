@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -6,6 +6,7 @@ use std::thread;
 use crate::audio::{self, AudioChunk};
 use crate::engine::detector::{DetectorConfig, StreamingDetector};
 use crate::engine::matcher::{MatcherConfig, StreamingMatcher, TriggerEvent};
+use crate::engine::Sensitivity;
 
 /// Events surfaced by the detection pipeline to the application layer.
 #[derive(Debug)]
@@ -23,6 +24,7 @@ pub enum EngineEvent {
 ///   (action execution) never block detection
 pub struct Engine {
     detection_enabled: Arc<AtomicBool>,
+    sensitivity: Arc<AtomicU8>,
     stop: Arc<AtomicBool>,
 }
 
@@ -35,17 +37,25 @@ impl Engine {
         self.detection_enabled.store(enabled, Ordering::Relaxed);
     }
 
+    /// Applied live: the detection thread rebuilds its detector and
+    /// matcher on the next audio chunk.
+    pub fn set_sensitivity(&self, sensitivity: Sensitivity) {
+        self.sensitivity
+            .store(sensitivity.as_u8(), Ordering::Relaxed);
+    }
+
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
 }
 
-pub fn start<F>(on_event: F) -> Engine
+pub fn start<F>(sensitivity: Sensitivity, on_event: F) -> Engine
 where
     F: Fn(EngineEvent) + Send + 'static,
 {
     let stop = Arc::new(AtomicBool::new(false));
     let detection_enabled = Arc::new(AtomicBool::new(true));
+    let sensitivity = Arc::new(AtomicU8::new(sensitivity.as_u8()));
 
     // Bounded so a stalled detection thread sheds load instead of growing.
     let (audio_tx, audio_rx) = mpsc::sync_channel::<AudioChunk>(64);
@@ -60,8 +70,9 @@ where
     });
 
     let detection_flag = detection_enabled.clone();
+    let sensitivity_flag = sensitivity.clone();
     thread::spawn(move || {
-        run_detection(&audio_rx, &detection_flag, &event_tx);
+        run_detection(&audio_rx, &detection_flag, &sensitivity_flag, &event_tx);
     });
 
     thread::spawn(move || {
@@ -72,6 +83,7 @@ where
 
     Engine {
         detection_enabled,
+        sensitivity,
         stop,
     }
 }
@@ -79,10 +91,12 @@ where
 fn run_detection(
     audio_rx: &mpsc::Receiver<AudioChunk>,
     detection_enabled: &AtomicBool,
+    sensitivity: &AtomicU8,
     event_tx: &mpsc::Sender<EngineEvent>,
 ) {
+    let mut level = Sensitivity::from_u8(sensitivity.load(Ordering::Relaxed));
     let mut detector: Option<StreamingDetector> = None;
-    let mut matcher = StreamingMatcher::new(MatcherConfig::default());
+    let mut matcher = StreamingMatcher::new(MatcherConfig::for_sensitivity(level));
     let mut was_enabled = true;
 
     // Ends when the audio thread drops its sender.
@@ -97,8 +111,18 @@ fn run_detection(
             was_enabled = true;
         }
 
+        let next_level = Sensitivity::from_u8(sensitivity.load(Ordering::Relaxed));
+        if next_level != level {
+            // Rebuild both stages with the new tuning. The adaptive floor
+            // restarts from its initial estimate and re-converges within
+            // a second of ambient audio.
+            level = next_level;
+            detector = None;
+            matcher = StreamingMatcher::new(MatcherConfig::for_sensitivity(level));
+        }
+
         let detector = detector.get_or_insert_with(|| {
-            StreamingDetector::new(chunk.sample_rate, DetectorConfig::default())
+            StreamingDetector::new(chunk.sample_rate, DetectorConfig::for_sensitivity(level))
         });
         for clap in detector.push(&chunk.samples) {
             println!(

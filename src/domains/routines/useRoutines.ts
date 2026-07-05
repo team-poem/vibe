@@ -10,9 +10,10 @@ import {
   saveRoutineToStore,
   setActiveRoutineInStore,
   setLanguageInStore,
+  setSensitivityInStore,
   setThemeInStore,
 } from "./api";
-import type { Routine, RoutineConfig } from "./types";
+import type { ClapSensitivity, Routine, RoutineConfig } from "./types";
 
 interface UseRoutinesResult {
   config: RoutineConfig | null;
@@ -22,6 +23,7 @@ interface UseRoutinesResult {
   setActiveRoutine: (id: string | null) => Promise<void>;
   setLanguage: (language: Language) => Promise<void>;
   setTheme: (theme: ThemeSetting) => Promise<void>;
+  setSensitivity: (sensitivity: ClapSensitivity) => Promise<void>;
 }
 
 /// Owns the routine document mirrored from the Rust store. Every mutation
@@ -105,6 +107,15 @@ export const useRoutines = (): UseRoutinesResult => {
     }
   }
 
+  async function setSensitivity(sensitivity: ClapSensitivity) {
+    try {
+      setConfig(await setSensitivityInStore(sensitivity));
+      setError(null);
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }
+
   return {
     config,
     error,
@@ -113,6 +124,7 @@ export const useRoutines = (): UseRoutinesResult => {
     setActiveRoutine,
     setLanguage,
     setTheme,
+    setSensitivity,
   };
 };
 
