@@ -405,10 +405,10 @@ pub fn run() {
             let initial_sensitivity = store.snapshot().sensitivity;
             let engine = pipeline::start(initial_sensitivity, move |event| match event {
                 EngineEvent::Trigger(trigger) => {
-                    println!(
+                    layout::log_place(&format!(
                         "[trigger] double clap interval={}ms confidence={:.2}",
                         trigger.interval_ms, trigger.confidence
-                    );
+                    ));
                     let Some(routine) = trigger_store.snapshot().active_routine().cloned() else {
                         println!("[routine] no active routine, trigger ignored");
                         return;

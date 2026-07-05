@@ -199,6 +199,7 @@ pub fn open_file_in_placed_window(
     display: CGRect,
 ) -> Result<Placement, LayoutError> {
     if !is_trusted(false) {
+        log_place("[place:file] accessibility not trusted — placement skipped");
         return Err(LayoutError::NotTrusted);
     }
     let handler = default_handler_app(path);
