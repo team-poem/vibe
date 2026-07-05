@@ -1258,3 +1258,17 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - cargo test 55개, clippy 통과. 라이브 검증은 사용자 확인.
+
+## 2026-07-05 (release 0.1.2)
+
+### 변경
+
+- 버전 0.1.2 (tauri.conf / Cargo.toml / 설정 화면 표기).
+- 포함 픽스: fix/placement-races, fix/trust-probe-and-hotplug,
+  fix/offline-display-placements, fix/doc-placement.
+
+### 기록
+
+- 릴리즈 앱 프로세스명은 `vibe` — 재설치 시
+  `pkill -f "V.I.B.E.app/Contents/MacOS/vibe"` 후 프로세스 시작 시각으로
+  교체 검증. 옛 인스턴스가 살아 있으면 `open` 이 구버전만 활성화함.
