@@ -1343,3 +1343,33 @@ Performance Pass, 다중 모니터.
 - 포함 변경: fix/doc-fullscreen-stable (문서 배치 verify-until-stable —
   0.1.2 에서 누락 배포된 실 구현), feat/clap-sensitivity (박수 감도
   낮음/보통/높음 설정, 기본 튜닝 완화).
+
+## 2026-07-05 (fix/doc-refit-guardian)
+
+### 배경
+
+- 문서 전체화면이 최초 실행에서는 성공하고, 문서를 닫은 뒤 재실행하면
+  실패하는 재현 패턴 확인. 원인 두 가지: (1) `place_until_stable` 이
+  리사이즈 거부(`MovedOnly`)를 정착으로 간주하고 조기 종료 — 웜 재실행
+  중 창 복원 애니메이션 동안 AX 리사이즈가 일시 거부되는 경우 크기
+  변경 없이 성공 처리됨. (2) macOS 가 이전(전체화면) 프레임을 먼저
+  복원해 검증 루프가 ~0.7s 에 일치로 종료하고, 그 뒤 뷰어가 문서 로드
+  완료 시 창을 원래 크기로 재조정 — 루프 종료 후라 복구 불가.
+
+### 변경
+
+- `place_until_stable`: `MovedOnly` 를 Centered 영역에서만 정착으로
+  인정. 그 외 영역에서는 리사이즈가 먹힐 때까지 데드라인(4s) 내 재시도.
+- 배치 성공 후 6초간 400ms 간격으로 창 프레임을 감시해 목표에서
+  틀어지면 재적용하는 분리형 가디언 스레드(`spawn_refit_guardian`)
+  추가 — 비차단이므로 루틴 실행 속도에 영향 없음. Centered 는 제외.
+- `pick_target_window` 에서 비차단 선택 로직을 `current_target_window`
+  로 분리해 가디언과 공유 (fresh 우선, 기존 창 폴백).
+- `AxElement` 에 `unsafe impl Send` 추가 — AXUIElementRef 는 불변 CF
+  핸들이고 CFRetain/CFRelease/AX 호출은 스레드 안전이라는 SAFETY 주석
+  명시 (spec/code/rust/concurrency.md 의 명시적 정당화 요건).
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 58개 통과.
+- 라이브 재현 시나리오(문서 열기 → 닫기 → 재실행) 검증은 사용자 확인.
