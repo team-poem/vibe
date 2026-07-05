@@ -203,6 +203,17 @@ pub fn open_file_in_placed_window(
         return Err(LayoutError::NotTrusted);
     }
     let handler = default_handler_app(path);
+
+    // Files whose default app is Chrome must go through the same
+    // dedicated-window path as URLs: a plain `open` joins them as a tab of
+    // whichever Chrome window is frontmost, and placing "the document
+    // window" would then drag that whole window — including another
+    // display's tab group — onto this file's region.
+    if handler.as_deref() == Some("Google Chrome") && find_chrome_binary().is_some() {
+        log_place("[place:file] chrome is the handler → dedicated-window route");
+        return open_urls_in_placed_window(&[path], region, display);
+    }
+
     let snapshot = handler
         .as_deref()
         .and_then(find_pid)

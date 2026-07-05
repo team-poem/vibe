@@ -1397,3 +1397,16 @@ Performance Pass, 다중 모니터.
 
 - cargo fmt / clippy(-D warnings) / test 통과. 콜드/웜 시나리오에서
   로그 파일 기록 동작 확인. 실패 재현 로그는 사용자 확보 대기.
+
+## 2026-07-05 (fix/chrome-file-window)
+
+### 변경
+
+- 기본 앱이 Chrome 인 문서는 `open` 대신 URL 과 동일한 전용 새 창 경로
+  (`chrome --new-window`)로 오픈. `open` 은 최전면 Chrome 창에 탭으로
+  합류시키므로, 다른 디스플레이의 탭 그룹 창을 문서 창으로 오인해 통째로
+  끌어오던 문제(디스플레이 간 탭 섞임)의 원인이었음.
+
+### 검증
+
+- cargo test 통과, clippy `-D warnings` 클린. 라이브 검증은 사용자 확인.
