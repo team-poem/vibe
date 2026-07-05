@@ -30,6 +30,18 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     let mut app_placements: Vec<usize> = Vec::new();
 
     for (index, action) in actions.iter().enumerate() {
+        // A placement bound to a disconnected display is that display's
+        // setup — skip the whole action rather than opening it anywhere.
+        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
+            if !layout::display_connected(display_id) {
+                outcomes[index] = ActionOutcome {
+                    label: action.to_string(),
+                    success: true,
+                    detail: "skipped — target display not connected".to_owned(),
+                };
+                continue;
+            }
+        }
         match action {
             Action::OpenUrl {
                 region: Some(_), ..
@@ -207,6 +219,11 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
 fn restack_frontmost_first(actions: &[Action]) {
     let mut entries: Vec<(String, usize)> = Vec::new();
     for (index, action) in actions.iter().enumerate() {
+        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
+            if !layout::display_connected(display_id) {
+                continue;
+            }
+        }
         let app_name = match action {
             Action::OpenApp { name, .. } => Some(name.clone()),
             Action::OpenUrl {
