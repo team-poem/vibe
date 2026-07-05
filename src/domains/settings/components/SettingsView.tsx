@@ -10,21 +10,26 @@ import {
 import { useT } from "../../../shared/i18n/LanguageContext";
 import type { Language, MessageKey } from "../../../shared/i18n/messages";
 import type { ThemeSetting } from "../../../shared/theme";
+import type { ClapSensitivity } from "../../routines/types";
 
 const APP_VERSION = "0.1.2";
 
 interface SettingsViewProps {
   language: Language;
   theme: ThemeSetting;
+  sensitivity: ClapSensitivity;
   onChangeLanguage: (language: Language) => void;
   onChangeTheme: (theme: ThemeSetting) => void;
+  onChangeSensitivity: (sensitivity: ClapSensitivity) => void;
 }
 
 export const SettingsView = ({
   language,
   theme,
+  sensitivity,
   onChangeLanguage,
   onChangeTheme,
+  onChangeSensitivity,
 }: SettingsViewProps) => {
   const t = useT();
 
@@ -37,6 +42,12 @@ export const SettingsView = ({
 
       <h2 className="editorSectionTitle">{t("settings.languageSection")}</h2>
       <LanguagePicker current={language} onChange={onChangeLanguage} />
+
+      <h2 className="editorSectionTitle">
+        {t("settings.sensitivitySection")}
+      </h2>
+      <SensitivityPicker current={sensitivity} onChange={onChangeSensitivity} />
+      <p className="settingsHint">{t("settings.sensitivityHint")}</p>
 
       <h2 className="editorSectionTitle">{t("settings.generalSection")}</h2>
       <AutostartToggle />
@@ -79,6 +90,39 @@ const ThemePicker = ({
   return (
     <div className="segmented" role="group" aria-label="Theme">
       {THEME_OPTIONS.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={
+            option.value === current ? "segmentedItem on" : "segmentedItem"
+          }
+          onClick={() => onChange(option.value)}
+        >
+          {t(option.labelKey)}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+const SENSITIVITY_OPTIONS: { value: ClapSensitivity; labelKey: MessageKey }[] =
+  [
+    { value: "low", labelKey: "sensitivity.low" },
+    { value: "medium", labelKey: "sensitivity.medium" },
+    { value: "high", labelKey: "sensitivity.high" },
+  ];
+
+const SensitivityPicker = ({
+  current,
+  onChange,
+}: {
+  current: ClapSensitivity;
+  onChange: (sensitivity: ClapSensitivity) => void;
+}) => {
+  const t = useT();
+  return (
+    <div className="segmented" role="group" aria-label="Clap sensitivity">
+      {SENSITIVITY_OPTIONS.map((option) => (
         <button
           key={option.value}
           type="button"

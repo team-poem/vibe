@@ -8,6 +8,7 @@ pub mod routine;
 
 use std::sync::{Arc, Mutex};
 
+use engine::Sensitivity;
 use pipeline::{Engine, EngineEvent};
 use routine::{
     ExecutionLog, ExecutionRecord, Language, Routine, RoutineConfig, RoutineStore, Theme,
@@ -135,6 +136,20 @@ fn set_language(
 #[tauri::command]
 fn set_theme(store: tauri::State<'_, StoreState>, theme: Theme) -> Result<RoutineConfig, String> {
     store.0.set_theme(theme).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_sensitivity(
+    store: tauri::State<'_, StoreState>,
+    engine: tauri::State<'_, EngineState>,
+    sensitivity: Sensitivity,
+) -> Result<RoutineConfig, String> {
+    let config = store
+        .0
+        .set_sensitivity(sensitivity)
+        .map_err(|e| e.to_string())?;
+    engine.0.set_sensitivity(sensitivity);
+    Ok(config)
 }
 
 #[tauri::command]
@@ -363,6 +378,7 @@ pub fn run() {
             set_active_routine,
             set_language,
             set_theme,
+            set_sensitivity,
             check_accessibility_permission,
             repair_accessibility_permission,
             restart_app,
@@ -386,7 +402,8 @@ pub fn run() {
             let trigger_store = store.clone();
             let trigger_log = execution_log.clone();
             let trigger_app = app.handle().clone();
-            let engine = pipeline::start(move |event| match event {
+            let initial_sensitivity = store.snapshot().sensitivity;
+            let engine = pipeline::start(initial_sensitivity, move |event| match event {
                 EngineEvent::Trigger(trigger) => {
                     println!(
                         "[trigger] double clap interval={}ms confidence={:.2}",

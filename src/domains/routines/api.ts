@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Language } from "../../shared/i18n/messages";
 import type { ThemeSetting } from "../../shared/theme";
 import type {
+  ClapSensitivity,
   DisplayInfo,
   ExecutionRecord,
   Routine,
@@ -54,6 +55,13 @@ export async function setThemeInStore(
   theme: ThemeSetting,
 ): Promise<RoutineConfig> {
   return invoke<RoutineConfig>("set_theme", { theme });
+}
+
+/// Persists the level and re-tunes the running detection engine.
+export async function setSensitivityInStore(
+  sensitivity: ClapSensitivity,
+): Promise<RoutineConfig> {
+  return invoke<RoutineConfig>("set_sensitivity", { sensitivity });
 }
 
 export async function fetchAutostart(): Promise<boolean> {

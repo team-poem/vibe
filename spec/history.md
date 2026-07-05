@@ -1302,3 +1302,35 @@ Performance Pass, 다중 모니터.
 - 커밋 전 `place_until_stable`·`default_handler_app` 심볼 존재를 grep 으로
   확인 (18321f0 무늬만 커밋 재발 방지).
 - 라이브 반복 검증은 사용자 확인.
+
+## 2026-07-05 (feat/clap-sensitivity)
+
+### 배경
+
+- 더블 클랩이 자주 미검출된다는 리포트. 원인 분석 결과 세 게이트가 실제
+  박수를 걸러내고 있었음: (1) 감쇠 게이트 — 60ms 내 20dB 하강 요구는
+  울림 있는 방·마이크 AGC 환경에서 실패, 박수 자체가 폐기됨. (2) 온셋
+  문턱 32dB — 배경 소음이 있으면 도달 못 함. (3) 매처 간격 150~600ms
+  고정 — 빠르거나 느린 더블 클랩이 범위 밖, 크기 차 12dB 제한은 AGC 가
+  둘째 박수를 줄이면 초과.
+
+### 변경
+
+- `Sensitivity` enum(low/medium/high) 추가, 설정 파일에 저장
+  (`sensitivity`, 기본 medium). 기존 문서는 serde default 로 medium.
+- `DetectorConfig::for_sensitivity` / `MatcherConfig::for_sensitivity`
+  프리셋: low 는 기존 엄격 튜닝 유지, medium 은 온셋 26dB·감쇠
+  14dB/100ms·간격 130~800ms·크기 차 16dB 로 완화, high 는 온셋
+  21dB·감쇠 10dB/140ms·간격 110~1000ms·크기 차 20dB.
+- 파이프라인이 AtomicU8 로 감도를 공유, 변경 시 다음 오디오 청크에서
+  detector/matcher 를 새 튜닝으로 재생성 (재시작 불필요).
+- `set_sensitivity` 커맨드: store 저장 + 엔진 즉시 반영.
+- 설정 화면에 "박수 감도" 섹션(낮음/보통/높음 segmented) 과 안내 문구
+  추가. en/ko 문구, `.settingsHint` 스타일.
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 58개(신규 3개 포함) 통과,
+  tsc/vite 빌드 통과.
+- 기본값이 medium 으로 완화되므로 설치 직후부터 인식률 개선 기대.
+  오검출 증가 여부는 사용자 라이브 확인.

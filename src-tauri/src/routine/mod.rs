@@ -7,6 +7,7 @@ pub use store::{LoadReport, RoutineStore, StoreError};
 use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
+use crate::engine::Sensitivity;
 
 /// UI language for both the webview and the tray menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -49,6 +50,9 @@ pub struct RoutineConfig {
     pub language: Option<Language>,
     #[serde(default)]
     pub theme: Theme,
+    /// Double-clap detection sensitivity, applied live to the engine.
+    #[serde(default)]
+    pub sensitivity: Sensitivity,
 }
 
 impl RoutineConfig {
@@ -66,6 +70,7 @@ impl RoutineConfig {
             routines: vec![sample],
             language: None,
             theme: Theme::default(),
+            sensitivity: Sensitivity::default(),
         }
     }
 
@@ -120,5 +125,12 @@ mod tests {
         let json = r#"{"activeRoutineId":null,"routines":[]}"#;
         let config: RoutineConfig = serde_json::from_str(json).expect("deserialize");
         assert_eq!(config.theme, Theme::System);
+    }
+
+    #[test]
+    fn config_without_sensitivity_defaults_to_medium() {
+        let json = r#"{"activeRoutineId":null,"routines":[]}"#;
+        let config: RoutineConfig = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(config.sensitivity, Sensitivity::Medium);
     }
 }
