@@ -103,7 +103,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         }
     }
 
-    for index in app_placements {
+    for &index in &app_placements {
         let action = &actions[index];
         let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
             continue;
@@ -123,6 +123,20 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 // fail the action.
                 append_detail(&mut outcomes[index], &format!("placement failed: {err}"));
             }
+        }
+    }
+
+    // Apps that restore their previous window position do so asynchronously
+    // after launch, undoing the snap — settle, then re-apply once.
+    if !app_placements.is_empty() {
+        std::thread::sleep(Duration::from_millis(700));
+        for &index in &app_placements {
+            let action = &actions[index];
+            let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
+                continue;
+            };
+            let display = layout::display_frame(action.display());
+            let _ = layout::place_app_window(name, region, display);
         }
     }
 
@@ -182,13 +196,48 @@ fn restack_frontmost_first(actions: &[Action]) {
         return;
     }
     entries.sort_by_key(|(_, index)| std::cmp::Reverse(*index));
+
+    // Immediate pass: order whatever is already up — no waiting.
+    activate_in_order(&entries);
+
+    // A cold-launching app activates itself when it finishes, overriding
+    // the order. Instead of blocking on the slowest launch, a short-lived
+    // guardian re-asserts the sequence whenever a late app's window
+    // appears, then once more at the end.
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + RESTACK_GUARD_WINDOW;
+        let mut ready: Vec<bool> = entries
+            .iter()
+            .map(|(name, _)| layout::app_window_ready(name))
+            .collect();
+        while std::time::Instant::now() < deadline && ready.contains(&false) {
+            std::thread::sleep(RESTACK_GUARD_POLL);
+            let mut newly_ready = false;
+            for (slot, (name, _)) in ready.iter_mut().zip(entries.iter()) {
+                if !*slot && layout::app_window_ready(name) {
+                    *slot = true;
+                    newly_ready = true;
+                }
+            }
+            if newly_ready {
+                activate_in_order(&entries);
+            }
+        }
+        activate_in_order(&entries);
+    });
+}
+
+const RESTACK_GUARD_WINDOW: Duration = Duration::from_secs(7);
+const RESTACK_GUARD_POLL: Duration = Duration::from_millis(400);
+
+fn activate_in_order(entries: &[(String, usize)]) {
     for (app_name, _) in entries {
         let _ = Command::new("open")
-            .args(["-a", &app_name])
+            .args(["-a", app_name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        std::thread::sleep(Duration::from_millis(150));
+        std::thread::sleep(Duration::from_millis(120));
     }
 }
 
