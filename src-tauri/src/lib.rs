@@ -77,6 +77,12 @@ struct StatusState(Mutex<AppStatus>);
 struct StoreState(Arc<RoutineStore>);
 struct LogState(Arc<ExecutionLog>);
 
+/// Repeated double-claps while a routine is still assembling would queue
+/// full re-runs (relaunch, re-place, restack) and make every window flash
+/// again — swallow triggers inside the cooldown window.
+static LAST_RUN_STARTED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const TRIGGER_COOLDOWN_MS: u64 = 5000;
+
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -409,6 +415,13 @@ pub fn run() {
                         "[trigger] double clap interval={}ms confidence={:.2}",
                         trigger.interval_ms, trigger.confidence
                     ));
+                    let now = epoch_ms();
+                    let last = LAST_RUN_STARTED_MS.load(std::sync::atomic::Ordering::Relaxed);
+                    if now.saturating_sub(last) < TRIGGER_COOLDOWN_MS {
+                        layout::log_place("[trigger] ignored — cooldown");
+                        return;
+                    }
+                    LAST_RUN_STARTED_MS.store(now, std::sync::atomic::Ordering::Relaxed);
                     let Some(routine) = trigger_store.snapshot().active_routine().cloned() else {
                         println!("[routine] no active routine, trigger ignored");
                         return;
