@@ -19,7 +19,7 @@ import {
   regionLabelKey,
 } from "../layout";
 import type { LayoutPreset } from "../layout";
-import { actionLabel, actionValue, buildAction } from "../types";
+import { actionLabel, actionValue, buildAction, withActionValue } from "../types";
 import type { Action, ActionKind, DisplayInfo, Region, Routine } from "../types";
 
 interface RoutineEditorProps {
@@ -889,6 +889,56 @@ const PlacementPermissionHint = ({ needed }: { needed: boolean }) => {
 
 const ACTION_KINDS: ActionKind[] = ["open-app", "open-url"];
 
+/// Optional launch target for app actions: an IDE-style app can open a
+/// specific folder on launch (`open -a <app> <folder>`). Shows a picker
+/// button when unset, and the chosen folder (click to clear) when set.
+const ProjectFolderField = ({
+  path,
+  onPick,
+  onClear,
+}: {
+  path: string | null;
+  onPick: (path: string) => void;
+  onClear: () => void;
+}) => {
+  const t = useT();
+
+  async function handleBrowseClick(event: React.MouseEvent) {
+    event.stopPropagation();
+    const picked = await openFileDialog({ directory: true, multiple: false });
+    if (typeof picked === "string") {
+      onPick(picked);
+    }
+  }
+
+  if (!path) {
+    return (
+      <button
+        type="button"
+        className="ghostButton browseButton"
+        onClick={handleBrowseClick}
+      >
+        {t("editor.pickFolder")}
+      </button>
+    );
+  }
+
+  const folderName = path.split("/").pop() || path;
+  return (
+    <button
+      type="button"
+      className="folderBadge"
+      title={`${path} — ${t("editor.clearFolder")}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClear();
+      }}
+    >
+      {folderName} ✕
+    </button>
+  );
+};
+
 interface ActionCardProps {
   action: Action;
   index: number;
@@ -990,16 +1040,19 @@ const ActionCard = ({
         aria-label="Action value"
         list={action.type === "open-app" ? "installed-apps" : undefined}
         onChange={(event) =>
-          onChange(
-            buildAction(
-              action.type,
-              event.target.value,
-              action.region ?? null,
-              action.display ?? null,
-            ),
-          )
+          onChange(withActionValue(action, event.target.value))
         }
       />
+      {action.type === "open-app" && (
+        <ProjectFolderField
+          path={action.path ?? null}
+          onPick={(path) => onChange({ ...action, path })}
+          onClear={() => {
+            const { path: _path, ...rest } = action;
+            onChange(rest);
+          }}
+        />
+      )}
       {action.type === "open-file" && (
         <button
           type="button"
