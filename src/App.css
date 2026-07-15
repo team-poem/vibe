@@ -909,6 +909,27 @@ body {
   border-color: var(--accent);
 }
 
+.folderBadge {
+  flex: none;
+  max-width: 150px;
+  overflow: hidden;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.folderBadge:hover {
+  filter: brightness(0.92);
+}
+
 .regionBadge {
   flex: none;
   max-width: 150px;

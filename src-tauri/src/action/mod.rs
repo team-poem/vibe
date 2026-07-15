@@ -19,6 +19,10 @@ use crate::layout::Region;
 pub enum Action {
     OpenApp {
         name: String,
+        /// File or folder the app opens on launch (`open -a <name> <path>`),
+        /// e.g. an IDE opening a specific project folder.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Region>,
         /// Display the region maps onto; `None` = main display.
@@ -45,6 +49,7 @@ impl Action {
     pub fn open_app(name: impl Into<String>) -> Self {
         Self::OpenApp {
             name: name.into(),
+            path: None,
             region: None,
             display: None,
         }
@@ -98,6 +103,11 @@ impl Action {
 
     pub(crate) fn args(&self) -> Vec<&str> {
         match self {
+            Self::OpenApp {
+                name,
+                path: Some(path),
+                ..
+            } => vec!["-a", name.as_str(), path.as_str()],
             Self::OpenApp { name, .. } => vec!["-a", name.as_str()],
             Self::OpenUrl { url, .. } => vec![url.as_str()],
             Self::OpenFile { path, .. } => vec![path.as_str()],
@@ -108,6 +118,17 @@ impl Action {
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OpenApp {
+                name,
+                path: Some(path),
+                ..
+            } => {
+                let target = std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_else(|| path.as_str().into());
+                write!(f, "open-app({name}: {target})")
+            }
             Self::OpenApp { name, .. } => write!(f, "open-app({name})"),
             Self::OpenUrl { url, .. } => write!(f, "open-url({url})"),
             Self::OpenFile { path, .. } => {
@@ -131,6 +152,27 @@ mod tests {
         assert_eq!(action.program(), "open");
         assert_eq!(action.args(), vec!["-a", "Calculator"]);
         assert_eq!(action.kind_label(), "open-app");
+    }
+
+    #[test]
+    fn open_app_with_path_appends_the_target() {
+        let action = Action::OpenApp {
+            name: "Cursor".to_owned(),
+            path: Some("/Users/me/projects/vibe".to_owned()),
+            region: None,
+            display: None,
+        };
+        assert_eq!(
+            action.args(),
+            vec!["-a", "Cursor", "/Users/me/projects/vibe"]
+        );
+        assert_eq!(action.to_string(), "open-app(Cursor: vibe)");
+    }
+
+    #[test]
+    fn open_app_without_path_serializes_without_the_field() {
+        let json = serde_json::to_string(&Action::open_app("Cursor")).expect("serialize");
+        assert_eq!(json, r#"{"type":"open-app","name":"Cursor"}"#);
     }
 
     #[test]
