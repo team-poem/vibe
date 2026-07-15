@@ -1617,3 +1617,15 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - QuietGate 테스트 4종 포함 cargo test 통과, clippy 클린.
+
+## 2026-07-05 (release 0.1.4)
+
+### 변경
+
+- 버전 0.1.4 (tauri.conf / Cargo.toml / 설정 화면 표기).
+
+### 포함 범위 (v0.1.3 이후)
+
+- fix/single-instance, feat/app-open-path, feat/skip-assembled,
+  feat/quiet-gate(+latency), fix/run-guard, fix/execution-choreography,
+  fix/chrome-file-window, fix/doc-warm-reopen, placement.log 진단 영속화.
