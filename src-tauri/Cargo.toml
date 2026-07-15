@@ -1,6 +1,6 @@
 [package]
 name = "vibe"
-version = "0.1.3"
+version = "0.1.4"
 description = "V.I.B.E — Volume-Initiated Background Establisher"
 authors = ["team-poem"]
 edition = "2021"
@@ -34,6 +34,7 @@ core-graphics = "0.24"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSWorkspace", "NSRunningApplication"] }
 objc2-foundation = "0.3"
+tauri-plugin-single-instance = "2"
 
 [dev-dependencies]
 hound = "3.5"

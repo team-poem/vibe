@@ -5,8 +5,73 @@ use std::thread;
 
 use crate::audio::{self, AudioChunk};
 use crate::engine::detector::{DetectorConfig, StreamingDetector};
+use crate::engine::features::rms_db;
 use crate::engine::matcher::{MatcherConfig, StreamingMatcher, TriggerEvent};
 use crate::engine::Sensitivity;
+
+/// Post-trigger quiet gate. Claps are impulses: after the second clap the
+/// room drops back to the noise floor almost immediately, while sustained
+/// noise that slipped through the burst gates (hair dryers, vacuums,
+/// running water) stays loud. A matched trigger is held only until a short
+/// stretch of continuous quiet confirms the impulse — typically ~100 ms
+/// after the reverb tail — so the latency cost is barely perceptible,
+/// while sustained noise can never produce that quiet stretch.
+const QUIET_GATE_WINDOW_MS: u64 = 300;
+/// Continuous quiet that confirms the trigger immediately.
+const QUIET_GATE_CONFIRM_MS: u64 = 100;
+/// Loudness margin over the adaptive floor that counts as "still noisy".
+/// Clap reverb decays within a few tens of ms; sustained sources sit far
+/// above this for the entire window.
+const QUIET_GATE_MARGIN_DB: f32 = 12.0;
+/// Cumulative loud time tolerated inside the window (reverb allowance).
+const QUIET_GATE_LOUD_LIMIT_MS: u64 = 90;
+
+struct QuietGate {
+    trigger: TriggerEvent,
+    elapsed_ms: u64,
+    loud_ms: u64,
+    quiet_streak_ms: u64,
+}
+
+enum GateVerdict {
+    Pending,
+    Fire(TriggerEvent),
+    Discard,
+}
+
+impl QuietGate {
+    fn new(trigger: TriggerEvent) -> Self {
+        Self {
+            trigger,
+            elapsed_ms: 0,
+            loud_ms: 0,
+            quiet_streak_ms: 0,
+        }
+    }
+
+    fn feed(&mut self, above_floor_db: f32, chunk_ms: u64) -> GateVerdict {
+        let loud = above_floor_db.is_finite() && above_floor_db >= QUIET_GATE_MARGIN_DB;
+        if loud {
+            self.loud_ms += chunk_ms;
+            self.quiet_streak_ms = 0;
+        } else {
+            self.quiet_streak_ms += chunk_ms;
+        }
+        if self.loud_ms > QUIET_GATE_LOUD_LIMIT_MS {
+            return GateVerdict::Discard;
+        }
+        if self.quiet_streak_ms >= QUIET_GATE_CONFIRM_MS {
+            return GateVerdict::Fire(self.trigger);
+        }
+        self.elapsed_ms += chunk_ms;
+        if self.elapsed_ms >= QUIET_GATE_WINDOW_MS {
+            // Borderline but mostly quiet for the whole window: fire.
+            GateVerdict::Fire(self.trigger)
+        } else {
+            GateVerdict::Pending
+        }
+    }
+}
 
 /// Events surfaced by the detection pipeline to the application layer.
 #[derive(Debug)]
@@ -97,6 +162,7 @@ fn run_detection(
     let mut level = Sensitivity::from_u8(sensitivity.load(Ordering::Relaxed));
     let mut detector: Option<StreamingDetector> = None;
     let mut matcher = StreamingMatcher::new(MatcherConfig::for_sensitivity(level));
+    let mut quiet_gate: Option<QuietGate> = None;
     let mut was_enabled = true;
 
     // Ends when the audio thread drops its sender.
@@ -106,8 +172,10 @@ fn run_detection(
             continue;
         }
         if !was_enabled {
-            // A clap from before the pause must not pair with one after it.
+            // A clap from before the pause must not pair with one after it,
+            // and a trigger held from before the pause is stale.
             matcher.reset();
+            quiet_gate = None;
             was_enabled = true;
         }
 
@@ -119,11 +187,31 @@ fn run_detection(
             level = next_level;
             detector = None;
             matcher = StreamingMatcher::new(MatcherConfig::for_sensitivity(level));
+            quiet_gate = None;
         }
 
         let detector = detector.get_or_insert_with(|| {
             StreamingDetector::new(chunk.sample_rate, DetectorConfig::for_sensitivity(level))
         });
+
+        if let Some(gate) = quiet_gate.as_mut() {
+            let above = rms_db(&chunk.samples) - detector.floor_db();
+            let chunk_ms = (chunk.samples.len() as u64 * 1000) / chunk.sample_rate.max(1) as u64;
+            match gate.feed(above, chunk_ms) {
+                GateVerdict::Pending => {}
+                GateVerdict::Fire(trigger) => {
+                    quiet_gate = None;
+                    if event_tx.send(EngineEvent::Trigger(trigger)).is_err() {
+                        return;
+                    }
+                }
+                GateVerdict::Discard => {
+                    println!("[trigger] discarded — sustained noise after the pair");
+                    quiet_gate = None;
+                }
+            }
+        }
+
         for clap in detector.push(&chunk.samples) {
             println!(
                 "[clap] t={}ms peak={:.1}dB above_floor={:.1}dB flatness={:.2} confidence={:.2}",
@@ -134,10 +222,69 @@ fn run_detection(
                 clap.confidence
             );
             if let Some(trigger) = matcher.push(clap) {
-                if event_tx.send(EngineEvent::Trigger(trigger)).is_err() {
-                    return;
-                }
+                // Held until the room stays quiet for the gate window.
+                quiet_gate = Some(QuietGate::new(trigger));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trigger() -> TriggerEvent {
+        TriggerEvent {
+            first_at_ms: 0,
+            second_at_ms: 300,
+            interval_ms: 300,
+            confidence: 0.8,
+        }
+    }
+
+    #[test]
+    fn continuous_quiet_fires_early() {
+        let mut gate = QuietGate::new(trigger());
+        // 100 ms of continuous quiet confirms without waiting the window.
+        for _ in 0..9 {
+            assert!(matches!(gate.feed(2.0, 10), GateVerdict::Pending));
+        }
+        assert!(matches!(gate.feed(2.0, 10), GateVerdict::Fire(_)));
+    }
+
+    #[test]
+    fn sustained_noise_discards_the_trigger() {
+        let mut gate = QuietGate::new(trigger());
+        let mut verdicts = Vec::new();
+        for _ in 0..10 {
+            verdicts.push(gate.feed(25.0, 10));
+        }
+        assert!(verdicts.iter().any(|v| matches!(v, GateVerdict::Discard)));
+    }
+
+    #[test]
+    fn short_reverb_tail_is_tolerated() {
+        let mut gate = QuietGate::new(trigger());
+        // 80 ms of reverb (within allowance), then 100 ms quiet → fire.
+        for _ in 0..8 {
+            assert!(matches!(gate.feed(20.0, 10), GateVerdict::Pending));
+        }
+        for _ in 0..9 {
+            assert!(matches!(gate.feed(1.0, 10), GateVerdict::Pending));
+        }
+        assert!(matches!(gate.feed(1.0, 10), GateVerdict::Fire(_)));
+    }
+
+    #[test]
+    fn intermittent_noise_resets_the_quiet_streak() {
+        let mut gate = QuietGate::new(trigger());
+        // Quiet runs keep being interrupted before reaching 100 ms; the
+        // trigger must not fire early on fragmented quiet.
+        for _ in 0..3 {
+            for _ in 0..8 {
+                assert!(matches!(gate.feed(2.0, 10), GateVerdict::Pending));
+            }
+            assert!(matches!(gate.feed(20.0, 10), GateVerdict::Pending));
         }
     }
 }

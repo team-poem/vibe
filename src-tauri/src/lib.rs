@@ -77,6 +77,12 @@ struct StatusState(Mutex<AppStatus>);
 struct StoreState(Arc<RoutineStore>);
 struct LogState(Arc<ExecutionLog>);
 
+/// Repeated double-claps while a routine is still assembling would queue
+/// full re-runs (relaunch, re-place, restack) and make every window flash
+/// again — swallow triggers inside the cooldown window.
+static LAST_RUN_STARTED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const TRIGGER_COOLDOWN_MS: u64 = 5000;
+
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -365,6 +371,17 @@ fn handle_routine_menu_click<R: Runtime>(app: &AppHandle<R>, routine_id: &str) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Two live instances would each hear the same clap and run the
+        // routine twice, racing each other's window snapshots (a stale
+        // instance once dragged another display's tab group fullscreen).
+        // Registered first so the guard runs before any other setup.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            layout::log_place("[app] second launch blocked — showing existing instance");
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
@@ -405,14 +422,25 @@ pub fn run() {
             let initial_sensitivity = store.snapshot().sensitivity;
             let engine = pipeline::start(initial_sensitivity, move |event| match event {
                 EngineEvent::Trigger(trigger) => {
-                    println!(
+                    layout::log_place(&format!(
                         "[trigger] double clap interval={}ms confidence={:.2}",
                         trigger.interval_ms, trigger.confidence
-                    );
+                    ));
+                    let now = epoch_ms();
+                    let last = LAST_RUN_STARTED_MS.load(std::sync::atomic::Ordering::Relaxed);
+                    if now.saturating_sub(last) < TRIGGER_COOLDOWN_MS {
+                        layout::log_place("[trigger] ignored — cooldown");
+                        return;
+                    }
                     let Some(routine) = trigger_store.snapshot().active_routine().cloned() else {
                         println!("[routine] no active routine, trigger ignored");
                         return;
                     };
+                    if action::routine_already_assembled(&routine.actions) {
+                        layout::log_place("[trigger] ignored — routine already assembled");
+                        return;
+                    }
+                    LAST_RUN_STARTED_MS.store(now, std::sync::atomic::Ordering::Relaxed);
                     let outcomes = action::run_routine(&routine.actions);
                     trigger_log.push(ExecutionRecord {
                         at_epoch_ms: epoch_ms(),

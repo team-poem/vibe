@@ -1343,3 +1343,289 @@ Performance Pass, 다중 모니터.
 - 포함 변경: fix/doc-fullscreen-stable (문서 배치 verify-until-stable —
   0.1.2 에서 누락 배포된 실 구현), feat/clap-sensitivity (박수 감도
   낮음/보통/높음 설정, 기본 튜닝 완화).
+
+## 2026-07-05 (fix/doc-refit-guardian)
+
+### 배경
+
+- 문서 전체화면이 최초 실행에서는 성공하고, 문서를 닫은 뒤 재실행하면
+  실패하는 재현 패턴 확인. 원인 두 가지: (1) `place_until_stable` 이
+  리사이즈 거부(`MovedOnly`)를 정착으로 간주하고 조기 종료 — 웜 재실행
+  중 창 복원 애니메이션 동안 AX 리사이즈가 일시 거부되는 경우 크기
+  변경 없이 성공 처리됨. (2) macOS 가 이전(전체화면) 프레임을 먼저
+  복원해 검증 루프가 ~0.7s 에 일치로 종료하고, 그 뒤 뷰어가 문서 로드
+  완료 시 창을 원래 크기로 재조정 — 루프 종료 후라 복구 불가.
+
+### 변경
+
+- `place_until_stable`: `MovedOnly` 를 Centered 영역에서만 정착으로
+  인정. 그 외 영역에서는 리사이즈가 먹힐 때까지 데드라인(4s) 내 재시도.
+- 배치 성공 후 6초간 400ms 간격으로 창 프레임을 감시해 목표에서
+  틀어지면 재적용하는 분리형 가디언 스레드(`spawn_refit_guardian`)
+  추가 — 비차단이므로 루틴 실행 속도에 영향 없음. Centered 는 제외.
+- `pick_target_window` 에서 비차단 선택 로직을 `current_target_window`
+  로 분리해 가디언과 공유 (fresh 우선, 기존 창 폴백).
+- `AxElement` 에 `unsafe impl Send` 추가 — AXUIElementRef 는 불변 CF
+  핸들이고 CFRetain/CFRelease/AX 호출은 스레드 안전이라는 SAFETY 주석
+  명시 (spec/code/rust/concurrency.md 의 명시적 정당화 요건).
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 58개 통과.
+- 라이브 재현 시나리오(문서 열기 → 닫기 → 재실행) 검증은 사용자 확인.
+
+## 2026-07-05 (fix/doc-warm-reopen — 진단 라운드)
+
+### 배경
+
+- fix/doc-refit-guardian 이후에도 문서 전체화면 실패 리포트. 재현 시도:
+  단일 문서 루틴과 실제 루틴(9액션, 단일 모니터) 모두에서 콜드/웜(창
+  닫고 재실행) 시나리오를 스피커 더블클랩 재생으로 구동 — 전부 정상
+  배치 확인 (frame == target 1710x1073, 가디언 드리프트 0회). 로컬
+  재현 불가로 판단.
+
+### 변경
+
+- 배치 진단 로그를 stdout 출력과 동시에
+  `~/Library/Application Support/com.vibe.app/placement.log` 에 append
+  하는 `log_place` 추가 — Finder 실행에서도 실패 순간의 핸들러/스냅샷/
+  프레임/재적용 기록 확보 가능.
+- `place_until_stable` 루프별 apply 결과·실측 프레임, 가디언 드리프트
+  재적용, 핸들러 해석 결과를 기록.
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 통과. 콜드/웜 시나리오에서
+  로그 파일 기록 동작 확인. 실패 재현 로그는 사용자 확보 대기.
+
+## 2026-07-05 (fix/chrome-file-window)
+
+### 변경
+
+- 기본 앱이 Chrome 인 문서는 `open` 대신 URL 과 동일한 전용 새 창 경로
+  (`chrome --new-window`)로 오픈. `open` 은 최전면 Chrome 창에 탭으로
+  합류시키므로, 다른 디스플레이의 탭 그룹 창을 문서 창으로 오인해 통째로
+  끌어오던 문제(디스플레이 간 탭 섞임)의 원인이었음.
+
+### 검증
+
+- cargo test 통과, clippy `-D warnings` 클린. 라이브 검증은 사용자 확인.
+
+## 2026-07-05 (fix/execution-choreography)
+
+### 변경
+
+- 재스택을 최대 2회 패스로 제한: 준비 대기(최대 4s, 보통 즉시) 후 1회
+  활성화, 낙오 앱이 있을 때만 추가 1회. 기존에는 즉시 패스 + 앱 준비마다
+  재패스 + 1.6s/3.6s 고정 재패스 + 종료 패스로 7초간 포커스 강탈이
+  반복되어 화면이 깜빡이던 원인이었음.
+- 재스택 대상에 배치된 문서를 뷰어 앱(핸들러) 이름으로 포함 — 뷰어의
+  늦은 자기 활성화가 지정 순서를 무시하고 최전면을 차지하던 문제 대응.
+- 앱 배치 0.7s 후 재적용을 드리프트 검사 후에만 수행
+  (`reassert_app_placement`) — 정착한 창이 다시 움찔거리지 않음.
+- 문서 안정화 루프도 프레임이 목표와 다를 때만 적용. Centered 는 최초
+  성공 즉시 종료(재적용 자체가 흔들림이므로).
+
+### 검증
+
+- cargo test 통과, clippy `-D warnings` 클린. 라이브 검증은 사용자 확인.
+
+## 2026-07-05 (fix/run-guard)
+
+### 변경
+
+- 트리거 쿨다운(5s): 루틴 조립 중 반복 박수가 전체 재실행(재실행·재배치·
+  재스택)으로 큐잉되어 창이 계속 깜빡이던 문제 차단. 쿨다운 내 트리거는
+  placement.log 에 기록 후 무시.
+- 재스택을 AX 신뢰 상태에서만 수행: 미승인 시 배치도 준비 신호도 없으므로
+  눈먼 활성화 패스(4s/10s 시점 포커스 강탈)를 제거하고 로그만 남김.
+- 낙오자 보정 패스는 대기 중 실제로 준비 상태로 전환된 앱이 있을 때만
+  실행 — 변화 없는 재패스는 또 한 번의 깜빡임일 뿐이므로 생략.
+
+### 근거 (placement.log 실측)
+
+- 최근 실행 전부 "accessibility not trusted — placement skipped": 바이너리
+  교체 후 미승인 상태에서 배치가 통째로 생략됐고(문서 미표시·순서 붕괴),
+  재스택만 눈먼 패스를 반복해 깜빡임을 만들었음.
+- 6~15초 간격의 연속 트리거 다수: 쿨다운 부재로 실행 겹침.
+
+### 검증
+
+- cargo test 통과, clippy `-D warnings` 클린.
+
+## 2026-07-05 (fix/single-instance)
+
+### 목표
+
+- "PDF 가 모니터1 전체화면으로 두 번 열리고, 모니터2용 탭 그룹 창이
+  모니터1로 끌려오는" 재발 보고의 원인 규명 및 차단.
+
+### 진단 (placement.log + ps 실측)
+
+- 20:49:40 로그에 같은 초에 double clap 트리거가 confidence 0.49 / 0.47 로
+  두 줄 — V.I.B.E 프로세스가 두 개(19:12 기동 pid 60571, 20:41 기동
+  pid 68543) 동시에 살아 있었고 각자 박수를 감지해 루틴을 이중 실행.
+- 구버전 인스턴스(chrome-file-window 수정 이전 코드가 메모리에 잔존)는
+  PDF 를 plain `open` 으로 열어 최전면 Chrome 창(모니터2 탭 그룹)에 탭으로
+  합류시켰고, refit guardian 이 그 창을 문서 창으로 오인해 모니터1
+  전체화면으로 re-assert (`drift frame x=3430` → `(0, 34)` 로그가 증거).
+- 신버전 인스턴스는 `chrome is the handler → dedicated-window route` 로
+  PDF 전용 창을 정상 오픈. 결과적으로 PDF 단독 창 + "PDF+탭3" 혼합 창이
+  동시에 존재 — 사용자가 본 상태와 정확히 일치. 코드 수정 자체는 정상
+  동작했고, 살아남은 stale 프로세스가 원인.
+
+### 변경
+
+- `tauri-plugin-single-instance` 추가, 빌더 최상단에 등록. 두 번째 실행
+  시도는 기존 인스턴스의 설정 창을 앞으로 가져오고 종료됨. 이중 트리거
+  (마이크 파이프라인 2개, 루틴 이중 실행, 스냅샷 diff 경합)의 근본 차단.
+- 실행 중이던 두 인스턴스를 종료하고 새 빌드를 /Applications 에 설치·기동.
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 통과. `pnpm tauri build` 성공,
+  설치 후 단일 프로세스 기동 확인. 라이브 박수 트리거 검증은 사용자 확인.
+
+### 후속 발견 (설정 롤백)
+
+- 사용자가 UI 에서 삭제한 GarageBand 액션이 routines.json 에 되살아나
+  계속 실행됨. 스토어는 시작 시 파일을 1회 로드하고 저장 시 메모리
+  전체를 덮어쓰므로, stale 인스턴스의 저장(20:52)이 신 인스턴스의 삭제를
+  덮어쓴 것 — 동일 이중 인스턴스 사고의 데이터 후유증.
+- 조치: 앱 종료 → routines.json 에서 GarageBand 액션 제거 → 재기동으로
+  복구. 코드 변경 없음(single-instance 가드가 재발 원인을 이미 차단).
+
+### 다음 단계로 넘어가는 계약
+
+- 앱 바이너리를 교체(재설치)한 뒤에는 반드시 구 프로세스 종료를 확인할 것.
+  single-instance 가드가 신규 중복 실행은 막지만, 교체 이전부터 떠 있던
+  구 프로세스까지 종료시키지는 못함.
+- 이중 인스턴스가 의심되는 사고 후에는 routines.json 내용도 UI 기준으로
+  검증할 것 — 마지막 저장자가 파일 전체를 덮어쓰는 구조라 편집이 유실될
+  수 있음.
+
+## 2026-07-05 (feat/open-app-with-folder)
+
+### 목표
+
+- IDE 류 앱(Cursor 등)을 특정 프로젝트 폴더로 바로 열 수 있게 open-app
+  액션에 선택적 대상 경로를 추가.
+
+### 변경
+
+- Rust: `Action::OpenApp` 에 `path: Option<String>` 추가. 지정 시 실행
+  인자가 `open -a <name> <path>` 가 됨. 미지정 직렬화는 기존과 동일
+  (`skip_serializing_if`)이라 기존 routines.json 과 완전 호환. Display
+  표기는 `open-app(Cursor: vibe)` 처럼 폴더명을 병기.
+- Frontend: `Action`(open-app) 타입에 `path?` 추가. ActionCard 의 앱
+  액션에 `ProjectFolderField` 컴포넌트 — 미지정이면 "폴더 지정…" 버튼
+  (디렉터리 선택 다이얼로그), 지정되면 폴더명 배지(클릭으로 해제).
+  액션 라벨은 `Cursor · vibe` 형태로 폴더명 병기.
+- 값 입력 onChange 가 `buildAction` 재생성으로 `path` 를 유실하던 문제를
+  피하려고 `withActionValue`(다른 필드 보존, 주 값만 교체) 를 추가.
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / cargo test(57) 통과, tsc 클린.
+  새 빌드를 /Applications 에 설치·기동. 라이브 확인은 사용자 검증.
+- 참고: dmg 번들 단계는 샌드박스 환경에서 실패했으나 .app 번들은 정상
+  생성 — 설치에는 .app 만 사용.
+
+### 다음 단계로 넘어가는 계약
+
+- open-app 의 `path` 는 폴더뿐 아니라 파일도 유효하지만(`open -a` 특성),
+  UI 는 폴더 선택만 노출. 파일까지 필요해지면 다이얼로그 옵션만 열면 됨.
+- 배치(placement)는 기존과 동일하게 앱 이름 기준 front window 를 스냅 —
+  프로젝트 창이 새로 뜨는 IDE 특성상 대부분 새 창이 배치 대상이 됨.
+
+## 2026-07-05 (feat/app-open-path)
+
+### 변경
+
+- `OpenApp` 에 선택 `path` 필드 추가: 지정 시 `open -a <app> <path>` 로
+  실행해 IDE 가 특정 프로젝트 폴더를 여는 등 대상 지정 실행을 지원.
+  표시명은 `open-app(앱: 대상)` 형식, 미지정 시 기존과 동일.
+- 편집기: 앱 액션에 "폴더 지정…" 버튼(네이티브 폴더 선택) 추가, 지정된
+  폴더는 배지로 표시하고 클릭으로 해제.
+
+### 검증
+
+- cargo test (path 인자 매핑 테스트 포함) / clippy / tsc 빌드 통과.
+
+## 2026-07-05 (feat/skip-assembled)
+
+### 변경
+
+- 조립 완료 가드: 활성 루틴이 실행할 앱(앱 액션, 배치 URL 의 Chrome,
+  문서 핸들러 앱)이 전부 창을 띄운 상태면 트리거를 무시하고
+  placement.log 에 기록. 이미 완성된 작업 공간 위에서의 재실행(재기동·
+  재배치·재스택 깜빡임, 문서 중복 오픈)을 트리거 단계에서 차단.
+- 배치 없는 URL 은 기존 창의 탭으로 열려 존재를 관측할 수 없으므로
+  판정에서 제외. AX 미승인 시 판정 불가 → 항상 실행.
+- 쿨다운 타임스탬프를 실제 실행 확정 시에만 갱신하도록 순서 조정 —
+  무시된 트리거가 후속 정당한 트리거를 5초간 막지 않음.
+
+### 사용 계약
+
+- 창 배치를 직접 흐트러뜨린 뒤 재정렬하려면 루틴 소속 앱 하나를 종료한
+  뒤 박수 — 전부 떠 있는 동안은 트리거가 의도적으로 침묵함.
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 통과. 라이브(전부 켠 상태 박수
+  → 무시, 하나 종료 후 박수 → 실행)는 사용자 확인.
+
+## 2026-07-05 (feat/quiet-gate)
+
+### 목표
+
+- 드라이기 등 지속 광대역 소음에서 발생하는 위양성 트리거 제거.
+
+### 진단
+
+- 지속 소음 기동 순간: 무음 플로어 대비 +26dB 급상승(에너지 게이트 통과),
+  광대역(flatness 통과), Medium/High 의 완화된 감쇠 게이트(14dB/100ms)가
+  모터 스핀업 출렁임을 감쇠로 오인. 적응 플로어(alpha 0.05)가 소음 레벨로
+  수렴하기 전 수백 ms 동안 클랩 2개가 잡혀 페어 판정.
+
+### 변경
+
+- 트리거 후 정적 게이트(QuietGate): 페어 확정 후 300ms 확인 창에서
+  플로어 +12dB 이상인 구간이 90ms 를 넘으면 트리거 폐기. 박수는 임펄스라
+  직후 플로어로 복귀하지만 지속 소음은 창 내내 시끄럽다는 성질을 이용 —
+  드라이기·청소기·물소리 계열을 원리적으로 차단. 잔향 꼬리는 90ms
+  허용치로 관용.
+- 감지 일시정지/감도 변경 시 보류 중 트리거 폐기. 발화 지연 +300ms 는
+  정확도 우선 트레이드오프로 채택.
+- detector 에 `floor_db()` 노출(게이트가 동일 기준으로 판정).
+
+### 검증
+
+- QuietGate 단위 테스트 3(정적 발화 / 지속 소음 폐기 / 잔향 관용) 포함
+  cargo test 통과, clippy `-D warnings` 클린. 드라이기 실기 검증은 사용자.
+
+## 2026-07-05 (fix/quiet-gate-latency)
+
+### 변경
+
+- 정적 게이트를 조기 발화형으로 개선: 고정 300ms 대기 대신 연속 100ms
+  정적이 확인되는 즉시 발화. 잔향(누적 90ms 허용) 감쇠 후 ~100ms 에
+  트리거되어 체감 지연이 대부분 제거됨. 지속 소음은 연속 100ms 정적을
+  만들 수 없으므로 차단력은 동일. 300ms 는 경계 소음에 대한 상한으로 유지.
+- 단속적 소음이 정적 스트릭을 리셋하는지 검증하는 테스트 추가.
+
+### 검증
+
+- QuietGate 테스트 4종 포함 cargo test 통과, clippy 클린.
+
+## 2026-07-05 (release 0.1.4)
+
+### 변경
+
+- 버전 0.1.4 (tauri.conf / Cargo.toml / 설정 화면 표기).
+
+### 포함 범위 (v0.1.3 이후)
+
+- fix/single-instance, feat/app-open-path, feat/skip-assembled,
+  feat/quiet-gate(+latency), fix/run-guard, fix/execution-choreography,
+  fix/chrome-file-window, fix/doc-warm-reopen, placement.log 진단 영속화.

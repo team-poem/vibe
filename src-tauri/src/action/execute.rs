@@ -66,7 +66,9 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     let wants_layout =
         !deferred_urls.is_empty() || !deferred_files.is_empty() || !app_placements.is_empty();
     if wants_layout && !layout::is_trusted(false) {
-        eprintln!("[layout] accessibility permission missing; skipping window placement");
+        crate::layout::log_place(
+            "[layout] accessibility permission missing; skipping window placement",
+        );
         for index in deferred_urls.into_iter().chain(deferred_files) {
             outcomes[index] = run_outcome(&actions[index]);
             append_detail(&mut outcomes[index], "placement skipped (no permission)");
@@ -155,7 +157,8 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     }
 
     // Apps that restore their previous window position do so asynchronously
-    // after launch, undoing the snap — settle, then re-apply once.
+    // after launch, undoing the snap — settle, then correct only windows
+    // that actually drifted, so settled ones never twitch.
     if !app_placements.is_empty() {
         std::thread::sleep(Duration::from_millis(700));
         for &index in &app_placements {
@@ -169,7 +172,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 }
             }
             let display = layout::display_frame(action.display());
-            let _ = layout::place_app_window(name, region, display);
+            layout::reassert_app_placement(name, region, display);
         }
     }
 
@@ -213,9 +216,44 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     outcomes
 }
 
+/// True when every app this routine would launch already has a window on
+/// screen — the workspace counts as assembled and a new trigger is a
+/// deliberate no-op, since re-running would only relaunch, re-place and
+/// re-stack windows that are already where the user put them.
+///
+/// Unplaced URLs are excluded from the verdict: they open as tabs of an
+/// existing window, and tab presence cannot be observed from outside.
+pub fn routine_already_assembled(actions: &[Action]) -> bool {
+    if !layout::is_trusted(false) {
+        return false;
+    }
+    let mut apps: Vec<String> = Vec::new();
+    for action in actions {
+        let app_name = match action {
+            Action::OpenApp { name, .. } => Some(name.clone()),
+            Action::OpenUrl {
+                region: Some(_), ..
+            } => Some("Google Chrome".to_owned()),
+            Action::OpenUrl { region: None, .. } => None,
+            Action::OpenFile { path, .. } => layout::file_handler_app(path),
+        };
+        if let Some(name) = app_name {
+            if !apps.contains(&name) {
+                apps.push(name);
+            }
+        }
+    }
+    !apps.is_empty() && apps.iter().all(|name| layout::app_window_ready(name))
+}
+
 /// Bring windows into list order: the app of action #1 ends frontmost.
 /// Re-activating each owning app from the bottom of the list upwards gives
 /// that stacking without any window-level z-order API.
+///
+/// Every activation steals focus and visibly raises windows, so the whole
+/// pass runs at most twice: once after a short readiness wait (placements
+/// already ran, so this usually exits immediately), and once more only if
+/// an app finished launching after the first pass.
 fn restack_frontmost_first(actions: &[Action]) {
     let mut entries: Vec<(String, usize)> = Vec::new();
     for (index, action) in actions.iter().enumerate() {
@@ -229,6 +267,13 @@ fn restack_frontmost_first(actions: &[Action]) {
             Action::OpenUrl {
                 region: Some(_), ..
             } => Some("Google Chrome".to_owned()),
+            // Placed documents take part through their viewer app, so a
+            // late-activating viewer cannot end on top uninvited.
+            Action::OpenFile {
+                path,
+                region: Some(_),
+                ..
+            } => layout::file_handler_app(path),
             _ => None,
         };
         let Some(app_name) = app_name else { continue };
@@ -240,50 +285,63 @@ fn restack_frontmost_first(actions: &[Action]) {
     if entries.len() < 2 {
         return;
     }
+    // Without AX access there is no window readiness signal and no
+    // placement happened either — blind activation passes would only
+    // flash focus around, so skip restacking entirely.
+    if !layout::is_trusted(false) {
+        layout::log_place("[restack] skipped — accessibility not trusted");
+        return;
+    }
     entries.sort_by_key(|(_, index)| std::cmp::Reverse(*index));
 
-    // Immediate pass: order whatever is already up — no waiting.
-    activate_in_order(&entries);
-
-    // A cold-launching app activates itself when it finishes, overriding
-    // the order. Instead of blocking on the slowest launch, a short-lived
-    // guardian re-asserts the sequence whenever a late app's window
-    // appears, then once more at the end.
     std::thread::spawn(move || {
-        let started = std::time::Instant::now();
-        let deadline = started + RESTACK_GUARD_WINDOW;
-        let mut fixed_marks = [1600u128, 3600].into_iter().peekable();
-        let mut ready: Vec<bool> = entries
-            .iter()
-            .map(|(name, _)| layout::app_window_ready(name))
-            .collect();
-        while std::time::Instant::now() < deadline && ready.contains(&false) {
-            std::thread::sleep(RESTACK_GUARD_POLL);
-            let mut reassert = false;
-            for (slot, (name, _)) in ready.iter_mut().zip(entries.iter()) {
-                if !*slot && layout::app_window_ready(name) {
-                    *slot = true;
-                    reassert = true;
-                }
-            }
-            // Fixed re-assert marks cover the case where window readiness
-            // cannot be observed (e.g. AX access blocked).
-            if let Some(&mark) = fixed_marks.peek() {
-                if started.elapsed().as_millis() >= mark {
-                    fixed_marks.next();
-                    reassert = true;
-                }
-            }
-            if reassert {
-                activate_in_order(&entries);
-            }
+        let ready_flags = |entries: &[(String, usize)]| -> Vec<bool> {
+            entries
+                .iter()
+                .map(|(name, _)| layout::app_window_ready(name))
+                .collect()
+        };
+
+        let deadline = std::time::Instant::now() + RESTACK_READY_WAIT;
+        while std::time::Instant::now() < deadline && ready_flags(&entries).contains(&false) {
+            std::thread::sleep(RESTACK_POLL);
         }
         activate_in_order(&entries);
+
+        let after_first = ready_flags(&entries);
+        if !after_first.contains(&false) {
+            return;
+        }
+        // Stragglers past the wait: fire one corrective pass only if one
+        // of them actually shows up — a blanket retry when nothing changed
+        // is just another focus flash.
+        let deadline = std::time::Instant::now() + RESTACK_STRAGGLER_WAIT;
+        let mut became_ready = false;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(RESTACK_POLL);
+            let now = ready_flags(&entries);
+            if now
+                .iter()
+                .zip(after_first.iter())
+                .any(|(now, before)| *now && !*before)
+            {
+                became_ready = true;
+                if !now.contains(&false) {
+                    break;
+                }
+            }
+        }
+        if became_ready {
+            activate_in_order(&entries);
+        } else {
+            layout::log_place("[restack] straggler pass skipped — nothing became ready");
+        }
     });
 }
 
-const RESTACK_GUARD_WINDOW: Duration = Duration::from_secs(7);
-const RESTACK_GUARD_POLL: Duration = Duration::from_millis(400);
+const RESTACK_READY_WAIT: Duration = Duration::from_secs(4);
+const RESTACK_STRAGGLER_WAIT: Duration = Duration::from_secs(6);
+const RESTACK_POLL: Duration = Duration::from_millis(200);
 
 fn activate_in_order(entries: &[(String, usize)]) {
     for (app_name, _) in entries {

@@ -29,6 +29,14 @@ pub enum AxError {
 /// Owned AXUIElement handle, released on drop.
 pub struct AxElement(AXUIElementRef);
 
+// SAFETY: AXUIElementRef is an immutable CoreFoundation handle. CFRetain,
+// CFRelease, CFEqual and the AXUIElement copy/set calls are documented as
+// thread-safe (the AX client API serializes requests to the target app),
+// and this wrapper exposes no other state. The placement code already
+// drives these handles from non-main threads; moving one across a thread
+// boundary changes nothing about how it is accessed.
+unsafe impl Send for AxElement {}
+
 impl Drop for AxElement {
     fn drop(&mut self) {
         unsafe { CFRelease(self.0 as CFTypeRef) };

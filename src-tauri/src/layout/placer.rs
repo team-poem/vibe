@@ -34,6 +34,31 @@ pub fn is_trusted(prompt: bool) -> bool {
     ax::is_process_trusted(prompt) && ax::control_probe_ok()
 }
 
+/// Print a placement diagnostic and append it to
+/// `~/Library/Application Support/com.vibe.app/placement.log`, so failures
+/// on end-user machines can be diagnosed regardless of how the app was
+/// launched (Finder launches discard stdout).
+pub fn log_place(line: &str) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let stamped = format!("[{secs}] {line}");
+    println!("{stamped}");
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let path = format!("{home}/Library/Application Support/com.vibe.app/placement.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{stamped}");
+    }
+}
+
 /// Snap the front window of a (just launched or already running) app to a
 /// region. The front window is intentional here: for app actions the user
 /// wants "that app's window" in the region, new or not.
@@ -174,9 +199,21 @@ pub fn open_file_in_placed_window(
     display: CGRect,
 ) -> Result<Placement, LayoutError> {
     if !is_trusted(false) {
+        log_place("[place:file] accessibility not trusted — placement skipped");
         return Err(LayoutError::NotTrusted);
     }
     let handler = default_handler_app(path);
+
+    // Files whose default app is Chrome must go through the same
+    // dedicated-window path as URLs: a plain `open` joins them as a tab of
+    // whichever Chrome window is frontmost, and placing "the document
+    // window" would then drag that whole window — including another
+    // display's tab group — onto this file's region.
+    if handler.as_deref() == Some("Google Chrome") && find_chrome_binary().is_some() {
+        log_place("[place:file] chrome is the handler → dedicated-window route");
+        return open_urls_in_placed_window(&[path], region, display);
+    }
+
     let snapshot = handler
         .as_deref()
         .and_then(find_pid)
@@ -202,10 +239,93 @@ pub fn open_file_in_placed_window(
     };
     let app = ax::application_element(pid);
     let label = handler.as_deref().unwrap_or("document viewer");
-    place_until_stable(&app, &snapshot, label, region, display)
+    log_place(&format!(
+        "[place:file] handler={handler:?} pid={pid} snapshot_windows={}",
+        snapshot.len()
+    ));
+    let placement = place_until_stable(&app, &snapshot, label, region, display)?;
+    // Viewers can still re-fit the window to the document after placement
+    // looked settled — typical on warm re-open, where macOS restores the
+    // previous frame first and the viewer resizes once loading finishes.
+    if region != Region::Centered {
+        spawn_refit_guardian(app, snapshot, region, display);
+    }
+    Ok(placement)
+}
+
+const REFIT_GUARD_WINDOW: Duration = Duration::from_secs(6);
+const REFIT_GUARD_POLL: Duration = Duration::from_millis(400);
+
+/// Watch the placed document window for a few more seconds and re-assert
+/// the target frame whenever it drifts. Detached on purpose: placement
+/// already succeeded and was reported; this thread only defends it, so
+/// nobody joins it and it exits by its own deadline.
+fn spawn_refit_guardian(
+    app: ax::AxElement,
+    snapshot: Vec<ax::AxElement>,
+    region: Region,
+    display: CGRect,
+) {
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + REFIT_GUARD_WINDOW;
+        let target = region.frame(display);
+        while Instant::now() < deadline {
+            std::thread::sleep(REFIT_GUARD_POLL);
+            let Some(window) = current_target_window(&app, &snapshot) else {
+                log_place("[place:guard] no window");
+                continue;
+            };
+            let frame = ax::window_frame(&window);
+            let drifted = frame
+                .map(|frame| !frames_close(frame, target))
+                .unwrap_or(false);
+            if drifted {
+                let result = ax::set_window_frame(&window, target);
+                log_place(&format!(
+                    "[place:guard] drift frame={frame:?} → re-assert {result:?}"
+                ));
+            }
+        }
+        log_place("[place:guard] done");
+    });
+}
+
+/// Re-apply an app placement only if its window drifted off target —
+/// called once after the settle delay, without making settled windows jump.
+pub fn reassert_app_placement(app_name: &str, region: Region, display: CGRect) {
+    // A centered window keeps its natural size; after the initial move any
+    // further correction would fight the app's own geometry.
+    if region == Region::Centered {
+        return;
+    }
+    let Some(pid) = find_pid(app_name) else {
+        return;
+    };
+    let app = ax::application_element(pid);
+    let Ok(windows) = ax::windows(&app) else {
+        return;
+    };
+    let Some(window) = pick_main_window(windows) else {
+        return;
+    };
+    let target = region.frame(display);
+    let drifted = ax::window_frame(&window)
+        .map(|frame| !frames_close(frame, target))
+        .unwrap_or(false);
+    if drifted {
+        let result = ax::set_window_frame(&window, target);
+        log_place(&format!(
+            "[place:app] drift re-assert {app_name} → {result:?}"
+        ));
+    }
 }
 
 /// App that LaunchServices would use to open `path`, by bundle name.
+/// Public so the restack pass can order placed documents by their viewer.
+pub fn file_handler_app(path: &str) -> Option<String> {
+    default_handler_app(path)
+}
+
 fn default_handler_app(path: &str) -> Option<String> {
     use objc2_app_kit::NSWorkspace;
     use objc2_foundation::{NSString, NSURL};
@@ -241,31 +361,48 @@ fn place_until_stable(
 
     while Instant::now() < deadline {
         let Ok(window) = pick_target_window(app, snapshot, label) else {
+            log_place("[place:file] no target window yet");
             std::thread::sleep(STABLE_POLL);
             continue;
         };
-        if let Ok(placement) = apply_placement(&window, region, display) {
-            last = Some(placement);
-        }
-        std::thread::sleep(STABLE_POLL);
 
-        let settled = match last {
-            // Centered / fixed-size windows never match the target frame;
-            // a successful apply counts as settled.
-            Some(Placement::MovedOnly) => true,
-            Some(Placement::Full) => ax::window_frame(&window)
-                .map(|frame| frames_close(frame, target))
-                .unwrap_or(false),
-            None => false,
-        };
-        if settled {
+        // Centered keeps the window's natural size: one successful move
+        // is final, and re-applying would just make the window twitch.
+        if region == Region::Centered {
+            let apply = apply_placement(&window, region, display);
+            log_place(&format!("[place:file] centered apply={apply:?}"));
+            if let Ok(placement) = apply {
+                return Ok(placement);
+            }
+            std::thread::sleep(STABLE_POLL);
+            continue;
+        }
+
+        // Only touch the window when its frame actually drifted — an
+        // unconditional re-apply makes correctly placed windows jitter.
+        let on_target = ax::window_frame(&window)
+            .map(|frame| frames_close(frame, target))
+            .unwrap_or(false);
+        if on_target {
+            if last.is_none() {
+                last = Some(Placement::Full);
+            }
             stable += 1;
             if stable >= 2 {
                 break;
             }
         } else {
             stable = 0;
+            let apply = apply_placement(&window, region, display);
+            log_place(&format!(
+                "[place:file] apply={apply:?} frame={:?} target={target:?}",
+                ax::window_frame(&window)
+            ));
+            if let Ok(placement) = apply {
+                last = Some(placement);
+            }
         }
+        std::thread::sleep(STABLE_POLL);
     }
     last.ok_or_else(|| LayoutError::WindowTimeout(label.to_owned()))
 }
@@ -285,16 +422,20 @@ fn pick_target_window(
     snapshot: &[ax::AxElement],
     label: &str,
 ) -> Result<ax::AxElement, LayoutError> {
-    if let Ok(windows) = ax::windows(app) {
-        let fresh: Vec<ax::AxElement> = windows
-            .into_iter()
-            .filter(|w| !snapshot.iter().any(|old| ax::same_element(w, old)))
-            .collect();
-        if let Some(window) = pick_main_window(fresh) {
-            return Ok(window);
-        }
+    match current_target_window(app, snapshot) {
+        Some(window) => Ok(window),
+        None => wait_for_main_window(app, label),
     }
-    wait_for_main_window(app, label)
+}
+
+/// Non-blocking variant of [`pick_target_window`]: `None` when the app has
+/// no windows right now.
+fn current_target_window(app: &ax::AxElement, snapshot: &[ax::AxElement]) -> Option<ax::AxElement> {
+    let windows = ax::windows(app).ok()?;
+    let (fresh, seen): (Vec<_>, Vec<_>) = windows
+        .into_iter()
+        .partition(|w| !snapshot.iter().any(|old| ax::same_element(w, old)));
+    pick_main_window(fresh).or_else(|| pick_main_window(seen))
 }
 
 fn frontmost_pid() -> Option<i32> {

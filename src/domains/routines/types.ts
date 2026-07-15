@@ -18,6 +18,8 @@ export type Action =
   | {
       type: "open-app";
       name: string;
+      /** File or folder the app opens on launch, e.g. an IDE's project folder. */
+      path?: string | null;
       region?: Region | null;
       display?: number | null;
     }
@@ -97,7 +99,22 @@ export const actionLabel = (action: Action): string => {
       return action.url || "url";
     }
   }
-  return action.name || "app";
+  const appName = action.name || "app";
+  const folderName = action.path?.split("/").pop();
+  return folderName ? `${appName} · ${folderName}` : appName;
+};
+
+/** Replace only the action's main value (app name / url / file path),
+ * keeping every other field — unlike `buildAction`, which starts fresh. */
+export const withActionValue = (action: Action, value: string): Action => {
+  switch (action.type) {
+    case "open-app":
+      return { ...action, name: value };
+    case "open-url":
+      return { ...action, url: value };
+    case "open-file":
+      return { ...action, path: value };
+  }
 };
 
 export const buildAction = (
