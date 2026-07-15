@@ -432,11 +432,15 @@ pub fn run() {
                         layout::log_place("[trigger] ignored — cooldown");
                         return;
                     }
-                    LAST_RUN_STARTED_MS.store(now, std::sync::atomic::Ordering::Relaxed);
                     let Some(routine) = trigger_store.snapshot().active_routine().cloned() else {
                         println!("[routine] no active routine, trigger ignored");
                         return;
                     };
+                    if action::routine_already_assembled(&routine.actions) {
+                        layout::log_place("[trigger] ignored — routine already assembled");
+                        return;
+                    }
+                    LAST_RUN_STARTED_MS.store(now, std::sync::atomic::Ordering::Relaxed);
                     let outcomes = action::run_routine(&routine.actions);
                     trigger_log.push(ExecutionRecord {
                         at_epoch_ms: epoch_ms(),

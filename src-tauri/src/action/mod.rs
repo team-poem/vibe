@@ -1,7 +1,7 @@
 mod execute;
 mod runner;
 
-pub use execute::run_routine;
+pub use execute::{routine_already_assembled, run_routine};
 pub use runner::{run, ActionResult, RunError};
 
 use std::fmt;
