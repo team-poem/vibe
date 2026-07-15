@@ -1,6 +1,6 @@
 [package]
 name = "vibe"
-version = "0.1.3"
+version = "0.1.4"
 description = "V.I.B.E — Volume-Initiated Background Establisher"
 authors = ["team-poem"]
 edition = "2021"
