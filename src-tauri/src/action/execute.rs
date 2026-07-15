@@ -216,6 +216,36 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     outcomes
 }
 
+/// True when every app this routine would launch already has a window on
+/// screen — the workspace counts as assembled and a new trigger is a
+/// deliberate no-op, since re-running would only relaunch, re-place and
+/// re-stack windows that are already where the user put them.
+///
+/// Unplaced URLs are excluded from the verdict: they open as tabs of an
+/// existing window, and tab presence cannot be observed from outside.
+pub fn routine_already_assembled(actions: &[Action]) -> bool {
+    if !layout::is_trusted(false) {
+        return false;
+    }
+    let mut apps: Vec<String> = Vec::new();
+    for action in actions {
+        let app_name = match action {
+            Action::OpenApp { name, .. } => Some(name.clone()),
+            Action::OpenUrl {
+                region: Some(_), ..
+            } => Some("Google Chrome".to_owned()),
+            Action::OpenUrl { region: None, .. } => None,
+            Action::OpenFile { path, .. } => layout::file_handler_app(path),
+        };
+        if let Some(name) = app_name {
+            if !apps.contains(&name) {
+                apps.push(name);
+            }
+        }
+    }
+    !apps.is_empty() && apps.iter().all(|name| layout::app_window_ready(name))
+}
+
 /// Bring windows into list order: the app of action #1 ends frontmost.
 /// Re-activating each owning app from the bottom of the list upwards gives
 /// that stacking without any window-level z-order API.
