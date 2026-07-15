@@ -111,6 +111,12 @@ impl StreamingDetector {
         }
     }
 
+    /// Current adaptive noise floor estimate, for callers that need to
+    /// judge loudness in the same reference frame as the detector.
+    pub fn floor_db(&self) -> f32 {
+        self.floor.current_db()
+    }
+
     /// Feed the next chunk of mono samples and return any claps confirmed
     /// within it. Chunk size does not need to align with frame boundaries.
     pub fn push(&mut self, samples: &[f32]) -> Vec<ClapEvent> {
