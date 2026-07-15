@@ -371,6 +371,17 @@ fn handle_routine_menu_click<R: Runtime>(app: &AppHandle<R>, routine_id: &str) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Two live instances would each hear the same clap and run the
+        // routine twice, racing each other's window snapshots (a stale
+        // instance once dragged another display's tab group fullscreen).
+        // Registered first so the guard runs before any other setup.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            layout::log_place("[app] second launch blocked — showing existing instance");
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(

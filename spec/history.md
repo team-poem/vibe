@@ -1452,3 +1452,88 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - cargo test 통과, clippy `-D warnings` 클린.
+
+## 2026-07-05 (fix/single-instance)
+
+### 목표
+
+- "PDF 가 모니터1 전체화면으로 두 번 열리고, 모니터2용 탭 그룹 창이
+  모니터1로 끌려오는" 재발 보고의 원인 규명 및 차단.
+
+### 진단 (placement.log + ps 실측)
+
+- 20:49:40 로그에 같은 초에 double clap 트리거가 confidence 0.49 / 0.47 로
+  두 줄 — V.I.B.E 프로세스가 두 개(19:12 기동 pid 60571, 20:41 기동
+  pid 68543) 동시에 살아 있었고 각자 박수를 감지해 루틴을 이중 실행.
+- 구버전 인스턴스(chrome-file-window 수정 이전 코드가 메모리에 잔존)는
+  PDF 를 plain `open` 으로 열어 최전면 Chrome 창(모니터2 탭 그룹)에 탭으로
+  합류시켰고, refit guardian 이 그 창을 문서 창으로 오인해 모니터1
+  전체화면으로 re-assert (`drift frame x=3430` → `(0, 34)` 로그가 증거).
+- 신버전 인스턴스는 `chrome is the handler → dedicated-window route` 로
+  PDF 전용 창을 정상 오픈. 결과적으로 PDF 단독 창 + "PDF+탭3" 혼합 창이
+  동시에 존재 — 사용자가 본 상태와 정확히 일치. 코드 수정 자체는 정상
+  동작했고, 살아남은 stale 프로세스가 원인.
+
+### 변경
+
+- `tauri-plugin-single-instance` 추가, 빌더 최상단에 등록. 두 번째 실행
+  시도는 기존 인스턴스의 설정 창을 앞으로 가져오고 종료됨. 이중 트리거
+  (마이크 파이프라인 2개, 루틴 이중 실행, 스냅샷 diff 경합)의 근본 차단.
+- 실행 중이던 두 인스턴스를 종료하고 새 빌드를 /Applications 에 설치·기동.
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / test 통과. `pnpm tauri build` 성공,
+  설치 후 단일 프로세스 기동 확인. 라이브 박수 트리거 검증은 사용자 확인.
+
+### 후속 발견 (설정 롤백)
+
+- 사용자가 UI 에서 삭제한 GarageBand 액션이 routines.json 에 되살아나
+  계속 실행됨. 스토어는 시작 시 파일을 1회 로드하고 저장 시 메모리
+  전체를 덮어쓰므로, stale 인스턴스의 저장(20:52)이 신 인스턴스의 삭제를
+  덮어쓴 것 — 동일 이중 인스턴스 사고의 데이터 후유증.
+- 조치: 앱 종료 → routines.json 에서 GarageBand 액션 제거 → 재기동으로
+  복구. 코드 변경 없음(single-instance 가드가 재발 원인을 이미 차단).
+
+### 다음 단계로 넘어가는 계약
+
+- 앱 바이너리를 교체(재설치)한 뒤에는 반드시 구 프로세스 종료를 확인할 것.
+  single-instance 가드가 신규 중복 실행은 막지만, 교체 이전부터 떠 있던
+  구 프로세스까지 종료시키지는 못함.
+- 이중 인스턴스가 의심되는 사고 후에는 routines.json 내용도 UI 기준으로
+  검증할 것 — 마지막 저장자가 파일 전체를 덮어쓰는 구조라 편집이 유실될
+  수 있음.
+
+## 2026-07-05 (feat/open-app-with-folder)
+
+### 목표
+
+- IDE 류 앱(Cursor 등)을 특정 프로젝트 폴더로 바로 열 수 있게 open-app
+  액션에 선택적 대상 경로를 추가.
+
+### 변경
+
+- Rust: `Action::OpenApp` 에 `path: Option<String>` 추가. 지정 시 실행
+  인자가 `open -a <name> <path>` 가 됨. 미지정 직렬화는 기존과 동일
+  (`skip_serializing_if`)이라 기존 routines.json 과 완전 호환. Display
+  표기는 `open-app(Cursor: vibe)` 처럼 폴더명을 병기.
+- Frontend: `Action`(open-app) 타입에 `path?` 추가. ActionCard 의 앱
+  액션에 `ProjectFolderField` 컴포넌트 — 미지정이면 "폴더 지정…" 버튼
+  (디렉터리 선택 다이얼로그), 지정되면 폴더명 배지(클릭으로 해제).
+  액션 라벨은 `Cursor · vibe` 형태로 폴더명 병기.
+- 값 입력 onChange 가 `buildAction` 재생성으로 `path` 를 유실하던 문제를
+  피하려고 `withActionValue`(다른 필드 보존, 주 값만 교체) 를 추가.
+
+### 검증
+
+- cargo fmt / clippy(-D warnings) / cargo test(57) 통과, tsc 클린.
+  새 빌드를 /Applications 에 설치·기동. 라이브 확인은 사용자 검증.
+- 참고: dmg 번들 단계는 샌드박스 환경에서 실패했으나 .app 번들은 정상
+  생성 — 설치에는 .app 만 사용.
+
+### 다음 단계로 넘어가는 계약
+
+- open-app 의 `path` 는 폴더뿐 아니라 파일도 유효하지만(`open -a` 특성),
+  UI 는 폴더 선택만 노출. 파일까지 필요해지면 다이얼로그 옵션만 열면 됨.
+- 배치(placement)는 기존과 동일하게 앱 이름 기준 front window 를 스냅 —
+  프로젝트 창이 새로 뜨는 IDE 특성상 대부분 새 창이 배치 대상이 됨.
