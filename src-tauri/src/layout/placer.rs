@@ -106,14 +106,15 @@ fn pick_main_window(windows: Vec<ax::AxElement>) -> Option<ax::AxElement> {
         .map(|(window, _)| window)
 }
 
-/// Single non-blocking check: does the app have a window yet? Used by the
-/// restack guardian to react to slow launches without waiting for them.
+/// Single non-blocking check: does the app have a real window on any
+/// Space? Backed by the CoreGraphics window list, so it needs no
+/// Accessibility permission and sees minimized/other-Space windows AX
+/// cannot.
 pub fn app_window_ready(app_name: &str) -> bool {
     let Some(pid) = find_pid(app_name) else {
         return false;
     };
-    let app = ax::application_element(pid);
-    ax::windows(&app).map(|w| !w.is_empty()).unwrap_or(false)
+    crate::layout::pid_has_real_window(pid)
 }
 
 /// Snap or, for `Centered`, move-only: the window keeps its natural size
@@ -495,20 +496,10 @@ fn wait_for_window(
     }
 }
 
-/// Resolve an app name to a pid. `pgrep -x` misses apps whose executable
-/// name differs from the app name (e.g. VS Code runs as "Electron"), so
-/// fall back to matching the bundle path.
+/// Resolve an app name to a pid via libproc executable-path lookup.
+/// `pgrep` was measured to miss Electron main processes entirely.
 fn find_pid(app_name: &str) -> Option<i32> {
-    let exact = Command::new("pgrep").args(["-x", app_name]).output().ok()?;
-    if let Some(pid) = first_pid(&exact.stdout) {
-        return Some(pid);
-    }
-    let bundle_pattern = format!("{app_name}.app/Contents/MacOS/");
-    let by_bundle = Command::new("pgrep")
-        .args(["-f", &bundle_pattern])
-        .output()
-        .ok()?;
-    first_pid(&by_bundle.stdout)
+    crate::layout::probe_find_pid(app_name)
 }
 
 fn first_pid(stdout: &[u8]) -> Option<i32> {
