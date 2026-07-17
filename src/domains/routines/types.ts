@@ -21,19 +21,19 @@ export type Action =
       /** File or folder the app opens on launch, e.g. an IDE's project folder. */
       path?: string | null;
       region?: Region | null;
-      display?: number | null;
+      display?: string | null;
     }
   | {
       type: "open-url";
       url: string;
       region?: Region | null;
-      display?: number | null;
+      display?: string | null;
     }
   | {
       type: "open-file";
       path: string;
       region?: Region | null;
-      display?: number | null;
+      display?: string | null;
     };
 
 export type ActionKind = Action["type"];
@@ -45,6 +45,7 @@ export interface Routine {
 }
 
 export interface DisplayInfo {
+  uuid: string;
   id: number;
   x: number;
   y: number;
@@ -121,7 +122,7 @@ export const buildAction = (
   kind: ActionKind,
   value: string,
   region: Region | null = null,
-  display: number | null = null,
+  display: string | null = null,
 ): Action => {
   const base: Action =
     kind === "open-app"

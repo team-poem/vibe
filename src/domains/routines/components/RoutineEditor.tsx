@@ -81,16 +81,16 @@ export const RoutineEditor = ({
 
   // Which display's canvas is being edited — pure view state; each
   // action stores its own (display, region) target.
-  const [viewDisplayId, setViewDisplayId] = useState<number | null>(null);
+  const [viewDisplayId, setViewDisplayId] = useState<string | null>(null);
 
-  const mainDisplayId = displays.find((d) => d.isMain)?.id ?? null;
+  const mainDisplayId = displays.find((d) => d.isMain)?.uuid ?? null;
   const viewedDisplay =
-    displays.find((d) => d.id === viewDisplayId) ??
+    displays.find((d) => d.uuid === viewDisplayId) ??
     displays.find((d) => d.isMain) ??
     displays[0] ??
     null;
 
-  const targetDisplayOf = (action: Action): number | null =>
+  const targetDisplayOf = (action: Action): string | null =>
     action.display ?? mainDisplayId;
 
   const placedOnViewedDisplay = draft.actions
@@ -98,7 +98,7 @@ export const RoutineEditor = ({
     .filter(
       ({ action }) =>
         Boolean(action.region) &&
-        targetDisplayOf(action) === (viewedDisplay?.id ?? mainDisplayId),
+        targetDisplayOf(action) === (viewedDisplay?.uuid ?? mainDisplayId),
     );
 
   // Placements saved for a display that is not currently connected are
@@ -107,7 +107,7 @@ export const RoutineEditor = ({
     (action) =>
       action.region &&
       action.display != null &&
-      !displays.some((d) => d.id === action.display),
+      !displays.some((d) => d.uuid === action.display),
   ).length;
 
   // The split tab follows the viewed display: derived from what is placed
@@ -115,7 +115,7 @@ export const RoutineEditor = ({
   const [presetOverrides, setPresetOverrides] = useState<
     Record<string, LayoutPreset>
   >({});
-  const displayKey = String(viewedDisplay?.id ?? "main");
+  const displayKey = viewedDisplay?.uuid ?? "main";
   const preset =
     presetOverrides[displayKey] ??
     derivePreset(placedOnViewedDisplay.map(({ action }) => action));
@@ -132,11 +132,11 @@ export const RoutineEditor = ({
       key: string;
       label: string;
       sortKey: number;
-      displayId: number | null;
+      displayId: string | null;
       items: { action: Action; index: number }[];
     };
     const list: Group[] = [];
-    const viewedId = viewedDisplay?.id ?? mainDisplayId;
+    const viewedId = viewedDisplay?.uuid ?? mainDisplayId;
     draft.actions.forEach((action, index) => {
       // The tab bar scopes the list: only this display's stacks are shown
       // (unplaced actions always are). Disconnected displays' placements
@@ -175,7 +175,7 @@ export const RoutineEditor = ({
   const withTarget = (action: Action, region: Region | null): Action => {
     const next = { ...action, region };
     if (region !== null && viewedDisplay && !viewedDisplay.isMain) {
-      next.display = viewedDisplay.id;
+      next.display = viewedDisplay.uuid;
     } else {
       delete next.display;
     }
@@ -213,7 +213,7 @@ export const RoutineEditor = ({
     const action = draft.actions[index];
     if (action?.region && displays.length > 1) {
       const target = targetDisplayOf(action);
-      if (target !== null && target !== viewedDisplay?.id) {
+      if (target !== null && target !== viewedDisplay?.uuid) {
         setViewDisplayId(target);
       }
     }
@@ -229,7 +229,7 @@ export const RoutineEditor = ({
     }
     const alreadyHere =
       (current.region ?? null) === region &&
-      targetDisplayOf(current) === (viewedDisplay?.id ?? mainDisplayId);
+      targetDisplayOf(current) === (viewedDisplay?.uuid ?? mainDisplayId);
     const nextRegion = alreadyHere ? null : region;
     updateActions(
       draft.actions.map((action, index) =>
@@ -347,7 +347,7 @@ export const RoutineEditor = ({
                   ? "segmentedItem on"
                   : "segmentedItem"
               }
-              onClick={() => setViewDisplayId(display.id)}
+              onClick={() => setViewDisplayId(display.uuid)}
             >
               {t("editor.display")} {order + 1}
             </button>
@@ -363,7 +363,7 @@ export const RoutineEditor = ({
             <DisplayArrangement
               displays={displays}
               selectedId={viewedDisplay?.id ?? null}
-              onPick={(display) => setViewDisplayId(display.id)}
+              onPick={(display) => setViewDisplayId(display.uuid)}
             />
           )}
           <div

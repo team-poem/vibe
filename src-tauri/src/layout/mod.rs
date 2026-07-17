@@ -71,10 +71,12 @@ impl Region {
 
 /// One connected display, in the global top-left coordinate space shared
 /// with the AX API. Sent to the frontend for the arrangement picker.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplayInfo {
     pub id: u32,
+    /// Stable across reboots and re-plugs, unlike the numeric id.
+    pub uuid: String,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -91,6 +93,7 @@ pub fn list_displays() -> Vec<DisplayInfo> {
             let bounds = CGDisplay::new(id).bounds();
             DisplayInfo {
                 id,
+                uuid: display_uuid(id).unwrap_or_else(|| id.to_string()),
                 x: bounds.origin.x,
                 y: bounds.origin.y,
                 width: bounds.size.width,
@@ -99,6 +102,80 @@ pub fn list_displays() -> Vec<DisplayInfo> {
             }
         })
         .collect()
+}
+
+/// Stable UUID of a display via CoreGraphics. The numeric CGDisplay id
+/// drifts across reboots/re-plugs; the UUID does not — actions persist it.
+pub fn display_uuid(display_id: u32) -> Option<String> {
+    use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+    use core_foundation::string::{CFString, CFStringRef};
+    use std::os::raw::c_void;
+
+    extern "C" {
+        fn CGDisplayCreateUUIDFromDisplayID(display: u32) -> *const c_void;
+        fn CFUUIDCreateString(alloc: *const c_void, uuid: *const c_void) -> CFStringRef;
+    }
+
+    unsafe {
+        let uuid = CGDisplayCreateUUIDFromDisplayID(display_id);
+        if uuid.is_null() {
+            return None;
+        }
+        let string = CFUUIDCreateString(std::ptr::null(), uuid);
+        CFRelease(uuid as CFTypeRef);
+        if string.is_null() {
+            return None;
+        }
+        Some(CFString::wrap_under_create_rule(string).to_string())
+    }
+}
+
+/// `(numeric id as string, uuid)` for every connected display — the
+/// store's one-time migration input.
+pub fn display_id_uuid_pairs() -> Vec<(String, String)> {
+    CGDisplay::active_displays()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|id| display_uuid(id).map(|uuid| (id.to_string(), uuid)))
+        .collect()
+}
+
+/// Where an action's display spec points right now.
+pub enum DisplayTarget {
+    Main,
+    Id(u32),
+    /// The referenced display is not connected (or the spec is a legacy
+    /// id that no longer resolves) — the placement must be skipped, never
+    /// silently retargeted.
+    Missing,
+}
+
+pub fn resolve_display(spec: Option<&str>) -> DisplayTarget {
+    let Some(spec) = spec else {
+        return DisplayTarget::Main;
+    };
+    let active = CGDisplay::active_displays().unwrap_or_default();
+    for &id in &active {
+        if display_uuid(id).as_deref() == Some(spec) {
+            return DisplayTarget::Id(id);
+        }
+    }
+    // Legacy numeric spec mid-session (file not yet migrated).
+    if let Ok(num) = spec.parse::<u32>() {
+        if active.contains(&num) {
+            return DisplayTarget::Id(num);
+        }
+    }
+    DisplayTarget::Missing
+}
+
+/// Frame for an action's display spec; callers skip `Missing` beforehand,
+/// so the main-display fallback here is only a safety net.
+pub fn display_frame_for(spec: Option<&str>) -> CGRect {
+    match resolve_display(spec) {
+        DisplayTarget::Main | DisplayTarget::Missing => display_frame(None),
+        DisplayTarget::Id(id) => display_frame(Some(id)),
+    }
 }
 
 pub fn display_connected(display_id: u32) -> bool {
