@@ -124,13 +124,11 @@ pub fn apps_all_have_windows(app_names: &[String]) -> bool {
     if app_names.is_empty() {
         return false;
     }
-    let pids = crate::layout::probe_find_pids(app_names);
-    if pids.iter().any(Option::is_none) {
-        return false;
-    }
+    let candidates = crate::layout::probe_find_all_pids(app_names);
     let windowed = crate::layout::real_window_pids();
-    pids.iter()
-        .all(|pid| windowed.contains(&i64::from(pid.unwrap_or(0))))
+    candidates
+        .iter()
+        .all(|pids| pids.iter().any(|pid| windowed.contains(&i64::from(*pid))))
 }
 
 /// Snap or, for `Centered`, move-only: the window keeps its natural size

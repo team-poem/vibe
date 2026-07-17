@@ -8,7 +8,8 @@ pub use placer::{
     place_app_window, reassert_app_placement, LayoutError,
 };
 pub(crate) use probe::{
-    find_pid as probe_find_pid, find_pids as probe_find_pids, pid_has_real_window, real_window_pids,
+    find_all_pids as probe_find_all_pids, find_pid as probe_find_pid, pid_has_real_window,
+    real_window_pids,
 };
 
 use core_graphics::display::CGDisplay;

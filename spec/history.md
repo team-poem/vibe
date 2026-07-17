@@ -1747,3 +1747,26 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - cargo test/clippy 통과. 다음 실측 1회로 원인 특정 예정.
+
+## 2026-07-17 (fix/chrome-clone-pid)
+
+### 진단 (텔레메트리 → 실측 확정)
+
+- 계측 로그: URL 그룹·PDF 모두 "fresh window NOT found (8s)", 재스택
+  unready=[Google Chrome] 영구 — Chrome 창 탐지 전면 실패가 세 증상
+  (배치 실패·순서 붕괴·자동재생 중단)의 단일 원인.
+- 실측: `proc_pidpath(chrome)` = `…/com.google.Chrome.code_sign_clone/…/
+  Google Chrome.app.bundle/Contents/MacOS/Google Chrome` — 최신 Chrome 은
+  메인 바이너리를 **code-sign clone**(`.app.bundle`) 경로에서 실행. 기존
+  매칭(`.app/Contents/MacOS/`)은 항상 불일치 → find_pid None. 대기 중엔
+  우리가 스폰한 핸드오프 스텁(진짜 .app 경로, 창 없음)이 잡혀 "창 없는
+  Chrome"을 8초 대기 → WindowTimeout — 로그와 정확히 일치.
+
+### 변경
+
+- `path_matches_app` 에 `.app.bundle`(code-sign clone) 형태 추가.
+- 동명 다중 매치(브라우저 본체 + 핸드오프 스텁) 시 **실창 보유 pid 우선**
+  선택. 가드 일괄 판정도 이름당 후보 전부 수집 후 "실창 보유 후보 존재"
+  기준으로 변경 (`find_all_pids`).
+- 회귀 테스트: 클론 경로 매칭. 라이브 프로브로 chrome pid·AX 창 3개
+  확인.
