@@ -193,25 +193,50 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     }
 
     // Apps that restore their previous window position do so asynchronously
-    // after launch, undoing the snap — settle, then correct only windows
-    // that actually drifted, so settled ones never twitch.
+    // after launch, undoing the snap. The settle wait and drift-checked
+    // correction run detached so documents and restacking start right
+    // away — the correction only ever touches windows that drifted.
     if !app_placements.is_empty() {
-        std::thread::sleep(Duration::from_millis(700));
-        for &index in &app_placements {
-            let action = &actions[index];
-            let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
-                continue;
-            };
-            if matches!(
-                layout::resolve_display(action.display()),
-                layout::DisplayTarget::Missing
-            ) {
-                {
-                    continue;
+        // When Chrome also owns placed URL/document windows, a Chrome app
+        // action's reassert could grab the largest of those windows and
+        // drag it into the app's region — skip Chrome in that case.
+        let chrome_owns_placed_windows = !deferred_urls.is_empty()
+            || deferred_files.iter().any(|&i| match &actions[i] {
+                Action::OpenFile { path, .. } => {
+                    layout::file_handler_app(path).as_deref() == Some("Google Chrome")
                 }
-            }
-            let display = layout::display_frame_for(action.display());
-            layout::reassert_app_placement(name, region, display);
+                _ => false,
+            });
+        let jobs: Vec<(String, Region, core_graphics::geometry::CGRect)> = app_placements
+            .iter()
+            .filter_map(|&index| {
+                let action = &actions[index];
+                let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
+                    return None;
+                };
+                if chrome_owns_placed_windows && name == "Google Chrome" {
+                    return None;
+                }
+                if matches!(
+                    layout::resolve_display(action.display()),
+                    layout::DisplayTarget::Missing
+                ) {
+                    return None;
+                }
+                Some((
+                    name.clone(),
+                    region,
+                    layout::display_frame_for(action.display()),
+                ))
+            })
+            .collect();
+        if !jobs.is_empty() {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(700));
+                for (name, region, frame) in jobs {
+                    layout::reassert_app_placement(&name, region, frame);
+                }
+            });
         }
     }
 
@@ -295,8 +320,9 @@ pub fn routine_already_assembled(actions: &[Action]) -> bool {
         }
     }
     // Window presence comes from the CG window list, so this verdict
-    // works even without Accessibility access.
-    !apps.is_empty() && apps.iter().all(|name| layout::app_window_ready(name))
+    // works even without Accessibility access. Batched: one process scan
+    // and one window enumeration for the whole routine.
+    layout::apps_all_have_windows(&apps)
 }
 
 /// Bring windows into list order: the app of action #1 ends frontmost.
