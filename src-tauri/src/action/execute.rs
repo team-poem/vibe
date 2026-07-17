@@ -67,11 +67,36 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         !deferred_urls.is_empty() || !deferred_files.is_empty() || !app_placements.is_empty();
     if wants_layout && !layout::is_trusted(false) {
         crate::layout::log_place(
-            "[layout] accessibility permission missing; skipping window placement",
+            "[layout] accessibility permission missing; opening without placement",
         );
-        for index in deferred_urls.into_iter().chain(deferred_files) {
-            outcomes[index] = run_outcome(&actions[index]);
-            append_detail(&mut outcomes[index], "placement skipped (no permission)");
+        // Placed URLs and Chrome-handled files still get their own fresh
+        // browser window — a plain `open` would pile them as tabs onto
+        // whichever window is frontmost.
+        let urls: Vec<&str> = deferred_urls
+            .iter()
+            .filter_map(|&i| match &actions[i] {
+                Action::OpenUrl { url, .. } => Some(url.as_str()),
+                _ => None,
+            })
+            .collect();
+        let url_outcome = layout::open_urls_unplaced(&urls);
+        for &i in &deferred_urls {
+            outcomes[i] = ActionOutcome {
+                label: actions[i].to_string(),
+                success: url_outcome.is_ok(),
+                detail: "opened without placement (no permission)".to_owned(),
+            };
+        }
+        for index in deferred_files {
+            let Action::OpenFile { path, .. } = &actions[index] else {
+                continue;
+            };
+            let outcome = layout::open_file_unplaced(path);
+            outcomes[index] = ActionOutcome {
+                label: actions[index].to_string(),
+                success: outcome.is_ok(),
+                detail: "opened without placement (no permission)".to_owned(),
+            };
         }
         for index in app_placements {
             append_detail(&mut outcomes[index], "placement skipped (no permission)");
@@ -224,11 +249,15 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
 /// Unplaced URLs are excluded from the verdict: they open as tabs of an
 /// existing window, and tab presence cannot be observed from outside.
 pub fn routine_already_assembled(actions: &[Action]) -> bool {
-    if !layout::is_trusted(false) {
-        return false;
-    }
     let mut apps: Vec<String> = Vec::new();
     for action in actions {
+        // Actions bound to a disconnected display are skipped by
+        // run_routine, so they must not count here either.
+        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
+            if !layout::display_connected(display_id) {
+                continue;
+            }
+        }
         let app_name = match action {
             Action::OpenApp { name, .. } => Some(name.clone()),
             Action::OpenUrl {
@@ -243,6 +272,8 @@ pub fn routine_already_assembled(actions: &[Action]) -> bool {
             }
         }
     }
+    // Window presence comes from the CG window list, so this verdict
+    // works even without Accessibility access.
     !apps.is_empty() && apps.iter().all(|name| layout::app_window_ready(name))
 }
 
