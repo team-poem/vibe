@@ -1629,3 +1629,23 @@ Performance Pass, 다중 모니터.
 - fix/single-instance, feat/app-open-path, feat/skip-assembled,
   feat/quiet-gate(+latency), fix/run-guard, fix/execution-choreography,
   fix/chrome-file-window, fix/doc-warm-reopen, placement.log 진단 영속화.
+
+## 2026-07-17 (fix/pid-window-probes)
+
+### 변경
+
+- `layout/probe.rs` 신설: pid 조회를 pgrep → libproc(proc_listpids +
+  proc_pidpath 경로 매칭)으로 교체. pgrep 은 Electron 메인 프로세스를
+  통째로 누락함을 실측(`pgrep -x Cursor` 무검출, ps 는 메인 표시) —
+  가드 상시 무력화·배치 8s 타임아웃·재스택 순서 열화의 공통 뿌리였음.
+  헬퍼는 Frameworks 경로 배제로 걸러냄.
+- 창 존재 판정을 AX → CGWindowListCopyWindowInfo 로 교체: Accessibility
+  권한 불필요, 다른 Space·최소화 창도 관측. ownerPID 매칭(로컬라이즈된
+  ownerName 사용 금지) + layer 0 + 200×150 최소 크기로 팬텀 창(메뉴바
+  백킹 스트립, 탭 프리뷰, 1×1) 배제 — 합의 판별식의 보수적 변형
+  (onscreen 절 제거로 온스크린 팬텀 리스크 제거, 실창 판정 방향은 동일).
+
+### 검증
+
+- 경로 판별 단위 테스트 2종 + 수동 스모크(`cargo test live_probe --
+  --ignored`)로 실행 중 Cursor pid·실창 검출 확인. clippy 클린.
