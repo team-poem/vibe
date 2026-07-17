@@ -37,12 +37,20 @@ const CG_WINDOW_LIST_OPTION_ALL: u32 = 0;
 
 /// True when `path` is the main executable of the named app bundle.
 /// Helpers live under `Contents/Frameworks/*.app/` and never match.
+/// Chrome-family browsers run their main binary from a code-sign clone
+/// (`…/com.google.Chrome.code_sign_clone/…/Google Chrome.app.bundle/…`),
+/// so the `.app.bundle` form must match too — measured live: `ps` shows
+/// the original path while `proc_pidpath` reports the clone.
 fn path_matches_app(path: &str, app_name: &str) -> bool {
-    let needle = format!("/{app_name}.app/Contents/MacOS/");
-    match path.find(&needle) {
-        Some(index) => !path[..index].contains("/Contents/Frameworks"),
-        None => false,
+    for needle in [
+        format!("/{app_name}.app/Contents/MacOS/"),
+        format!("/{app_name}.app.bundle/Contents/MacOS/"),
+    ] {
+        if let Some(index) = path.find(&needle) {
+            return !path[..index].contains("/Contents/Frameworks");
+        }
     }
+    false
 }
 
 /// Visit every process as `(pid, executable path)` in one libproc scan;
@@ -91,32 +99,42 @@ fn scan_processes(mut visit: impl FnMut(i32, &str) -> bool) {
 }
 
 /// Pid of the named app's main process, via executable path lookup.
+/// Several processes can match one name at once (the real browser plus a
+/// short-lived `--new-window` hand-off stub at the same path); the one
+/// that owns a real window is the browser — prefer it.
 pub fn find_pid(app_name: &str) -> Option<i32> {
-    let mut found = None;
+    let mut matches: Vec<i32> = Vec::new();
     scan_processes(|pid, path| {
         if path_matches_app(path, app_name) {
-            found = Some(pid);
-            false
-        } else {
-            true
+            matches.push(pid);
         }
+        true
     });
-    found
+    match matches.len() {
+        0 => None,
+        1 => Some(matches[0]),
+        _ => {
+            let windowed = real_window_pids();
+            matches
+                .iter()
+                .copied()
+                .find(|pid| windowed.contains(&i64::from(*pid)))
+                .or(Some(matches[0]))
+        }
+    }
 }
 
-/// Resolve several app names with a single process scan. The result is
-/// aligned with the input order.
-pub fn find_pids(app_names: &[String]) -> Vec<Option<i32>> {
-    let mut found: Vec<Option<i32>> = vec![None; app_names.len()];
-    let mut missing = app_names.len();
+/// Resolve several app names with a single process scan; every matching
+/// pid per name is kept so callers can prefer the windowed one.
+pub fn find_all_pids(app_names: &[String]) -> Vec<Vec<i32>> {
+    let mut found: Vec<Vec<i32>> = vec![Vec::new(); app_names.len()];
     scan_processes(|pid, path| {
         for (slot, name) in found.iter_mut().zip(app_names.iter()) {
-            if slot.is_none() && path_matches_app(path, name) {
-                *slot = Some(pid);
-                missing -= 1;
+            if path_matches_app(path, name) {
+                slot.push(pid);
             }
         }
-        missing > 0
+        true
     });
     found
 }
@@ -211,6 +229,14 @@ mod tests {
     }
 
     #[test]
+    fn matches_code_sign_clone_path() {
+        assert!(path_matches_app(
+            "/private/var/folders/nl/x/T/com.google.Chrome.code_sign_clone/code_sign_clone.abc/Google Chrome.app.bundle/Contents/MacOS/Google Chrome",
+            "Google Chrome"
+        ));
+    }
+
+    #[test]
     fn rejects_helpers_and_other_apps() {
         assert!(!path_matches_app(
             "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper.app/Contents/MacOS/Cursor Helper",
@@ -220,5 +246,25 @@ mod tests {
             "/Applications/Figma.app/Contents/MacOS/Figma",
             "Cursor"
         ));
+    }
+}
+
+#[cfg(test)]
+mod chrome_live {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn chrome_probe() {
+        let pid = find_pid("Google Chrome").expect("chrome running");
+        println!(
+            "chrome pid={pid} has_real_window={}",
+            pid_has_real_window(pid)
+        );
+        let app = crate::layout::ax::application_element(pid);
+        match crate::layout::ax::windows(&app) {
+            Ok(w) => println!("ax windows = {}", w.len()),
+            Err(e) => println!("ax windows ERR: {e}"),
+        }
     }
 }
