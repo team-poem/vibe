@@ -199,9 +199,7 @@ pub fn open_urls_in_placed_window(
             source,
         })?;
 
-    let pid = wait_for_pid("Google Chrome")?;
-    let app = ax::application_element(pid);
-    let window = match wait_for_window(&app, &snapshot, "Google Chrome") {
+    let window = match wait_for_fresh_chrome_window(&snapshot) {
         Ok(window) => window,
         Err(err) => {
             log_place(&format!("[url-window] fresh window NOT found: {err}"));
@@ -214,6 +212,37 @@ pub fn open_urls_in_placed_window(
         ax::window_frame(&window)
     ));
     Ok(placement)
+}
+
+/// Wait for a Chrome window that was not in `snapshot`, re-resolving the
+/// pid on every poll. During a cold start the `--new-window` hand-off stub
+/// (real `.app` path) and the browser main (code-sign-clone path) appear
+/// at different moments — watching a single pid captured once misses the
+/// window, which lands on whichever process wins.
+fn wait_for_fresh_chrome_window(snapshot: &[AxElement]) -> Result<AxElement, LayoutError> {
+    let deadline = Instant::now() + WINDOW_WAIT_TIMEOUT;
+    loop {
+        let candidates = crate::layout::probe_find_all_pids(&["Google Chrome".to_owned()])
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        for pid in candidates {
+            let app = ax::application_element(pid);
+            let Ok(windows) = ax::windows(&app) else {
+                continue;
+            };
+            let fresh = windows
+                .into_iter()
+                .find(|w| !snapshot.iter().any(|old| ax::same_element(w, old)));
+            if let Some(window) = fresh {
+                return Ok(window);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(LayoutError::WindowTimeout("Google Chrome".to_owned()));
+        }
+        std::thread::sleep(WINDOW_POLL_INTERVAL);
+    }
 }
 
 /// Open a document with its default app and snap that app's window.
@@ -544,30 +573,6 @@ fn find_chrome_binary() -> Option<PathBuf> {
     .into_iter()
     .map(PathBuf::from)
     .find(|path| path.exists())
-}
-
-/// First window not present in `snapshot` (front-most first); with an empty
-/// snapshot this is simply the front window.
-fn wait_for_window(
-    app: &AxElement,
-    snapshot: &[AxElement],
-    label: &str,
-) -> Result<AxElement, LayoutError> {
-    let deadline = Instant::now() + WINDOW_WAIT_TIMEOUT;
-    loop {
-        if let Ok(windows) = ax::windows(app) {
-            let fresh = windows
-                .into_iter()
-                .find(|w| !snapshot.iter().any(|old| ax::same_element(w, old)));
-            if let Some(window) = fresh {
-                return Ok(window);
-            }
-        }
-        if Instant::now() >= deadline {
-            return Err(LayoutError::WindowTimeout(label.to_owned()));
-        }
-        std::thread::sleep(WINDOW_POLL_INTERVAL);
-    }
 }
 
 /// Resolve an app name to a pid via libproc executable-path lookup.
