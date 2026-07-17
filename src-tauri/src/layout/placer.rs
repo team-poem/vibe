@@ -448,6 +448,51 @@ fn frontmost_pid() -> Option<i32> {
     first_pid(&output.stdout)
 }
 
+/// Open URLs in one fresh Chrome window without placing it — the
+/// no-Accessibility fallback that still avoids tab pile-up. Falls back to
+/// plain `open` per URL when Chrome is not installed.
+pub fn open_urls_unplaced(urls: &[&str]) -> Result<(), LayoutError> {
+    if urls.is_empty() {
+        return Ok(());
+    }
+    let Some(chrome) = find_chrome_binary() else {
+        for url in urls {
+            open_url_without_placement(url)?;
+        }
+        return Ok(());
+    };
+    Command::new(&chrome)
+        .arg("--new-window")
+        .args(urls)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| LayoutError::Spawn {
+            command: "chrome --new-window",
+            source,
+        })?;
+    Ok(())
+}
+
+/// Open a document without placement; Chrome-handled files go through the
+/// dedicated-window route so they never join an existing tab group.
+pub fn open_file_unplaced(path: &str) -> Result<(), LayoutError> {
+    if file_handler_app(path).as_deref() == Some("Google Chrome") && find_chrome_binary().is_some()
+    {
+        return open_urls_unplaced(&[path]);
+    }
+    Command::new("open")
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|source| LayoutError::Spawn {
+            command: "open <file>",
+            source,
+        })?;
+    Ok(())
+}
+
 fn open_url_without_placement(url: &str) -> Result<(), LayoutError> {
     Command::new("open")
         .arg(url)
