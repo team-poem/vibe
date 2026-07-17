@@ -455,6 +455,9 @@ pub fn run() {
                     });
                     let _ = trigger_app.emit("exec-log://updated", ());
                 }
+                EngineEvent::Diagnostic(message) => {
+                    layout::log_place(&message);
+                }
                 EngineEvent::CaptureFailed(message) => {
                     eprintln!("[audio] capture failed: {message}");
                     let app = trigger_app.clone();

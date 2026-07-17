@@ -26,11 +26,16 @@ const QUIET_GATE_MARGIN_DB: f32 = 12.0;
 /// Cumulative loud time tolerated inside the window (reverb allowance).
 const QUIET_GATE_LOUD_LIMIT_MS: u64 = 90;
 
+/// Fragmented-quiet borderline: this many interruptions of a running
+/// quiet streak inside the window mean an impulse train, not clap reverb.
+const QUIET_GATE_MAX_STREAK_RESETS: u32 = 3;
+
 struct QuietGate {
     trigger: TriggerEvent,
     elapsed_ms: u64,
     loud_ms: u64,
     quiet_streak_ms: u64,
+    streak_resets: u32,
 }
 
 enum GateVerdict {
@@ -46,6 +51,7 @@ impl QuietGate {
             elapsed_ms: 0,
             loud_ms: 0,
             quiet_streak_ms: 0,
+            streak_resets: 0,
         }
     }
 
@@ -53,6 +59,9 @@ impl QuietGate {
         let loud = above_floor_db.is_finite() && above_floor_db >= QUIET_GATE_MARGIN_DB;
         if loud {
             self.loud_ms += chunk_ms;
+            if self.quiet_streak_ms > 0 {
+                self.streak_resets += 1;
+            }
             self.quiet_streak_ms = 0;
         } else {
             self.quiet_streak_ms += chunk_ms;
@@ -65,8 +74,15 @@ impl QuietGate {
         }
         self.elapsed_ms += chunk_ms;
         if self.elapsed_ms >= QUIET_GATE_WINDOW_MS {
-            // Borderline but mostly quiet for the whole window: fire.
-            GateVerdict::Fire(self.trigger)
+            // Borderline: repeated interruptions of the quiet streak are
+            // scattered impulses (bottle-crush crackles slip past the
+            // detector's refractory window as loud chunks only), so the
+            // benefit of the doubt flips to Discard.
+            if self.streak_resets >= QUIET_GATE_MAX_STREAK_RESETS {
+                GateVerdict::Discard
+            } else {
+                GateVerdict::Fire(self.trigger)
+            }
         } else {
             GateVerdict::Pending
         }
@@ -78,6 +94,9 @@ impl QuietGate {
 pub enum EngineEvent {
     Trigger(TriggerEvent),
     CaptureFailed(String),
+    /// Detection diagnostics destined for placement.log — routed through
+    /// the event thread so the detection loop never does file I/O.
+    Diagnostic(String),
 }
 
 /// Handle to the running capture → detect → match pipeline.
@@ -153,6 +172,23 @@ where
     }
 }
 
+/// History horizon for the exactly-two rule bookkeeping.
+const CLAP_HISTORY_MS: u64 = 3000;
+/// Margin added to the pair interval when judging isolation.
+const PAIR_ISOLATION_MARGIN_MS: u64 = 500;
+
+/// More than two impulses inside the pair's lookback window means the
+/// matched pair belongs to an impulse train (plastic-bottle crush), not a
+/// deliberate double clap.
+fn impulse_train(history: &[u64], second_at_ms: u64, window_ms: u64) -> bool {
+    let from = second_at_ms.saturating_sub(window_ms);
+    history
+        .iter()
+        .filter(|&&t| t >= from && t <= second_at_ms)
+        .count()
+        > 2
+}
+
 fn run_detection(
     audio_rx: &mpsc::Receiver<AudioChunk>,
     detection_enabled: &AtomicBool,
@@ -160,9 +196,12 @@ fn run_detection(
     event_tx: &mpsc::Sender<EngineEvent>,
 ) {
     let mut level = Sensitivity::from_u8(sensitivity.load(Ordering::Relaxed));
+    let mut matcher_config = MatcherConfig::for_sensitivity(level);
     let mut detector: Option<StreamingDetector> = None;
-    let mut matcher = StreamingMatcher::new(MatcherConfig::for_sensitivity(level));
+    let mut matcher = StreamingMatcher::new(matcher_config);
     let mut quiet_gate: Option<QuietGate> = None;
+    let mut clap_history: Vec<u64> = Vec::new();
+    let mut last_fire_at_ms: Option<u64> = None;
     let mut was_enabled = true;
 
     // Ends when the audio thread drops its sender.
@@ -176,6 +215,7 @@ fn run_detection(
             // and a trigger held from before the pause is stale.
             matcher.reset();
             quiet_gate = None;
+            clap_history.clear();
             was_enabled = true;
         }
 
@@ -185,9 +225,11 @@ fn run_detection(
             // restarts from its initial estimate and re-converges within
             // a second of ambient audio.
             level = next_level;
+            matcher_config = MatcherConfig::for_sensitivity(level);
             detector = None;
-            matcher = StreamingMatcher::new(MatcherConfig::for_sensitivity(level));
+            matcher = StreamingMatcher::new(matcher_config);
             quiet_gate = None;
+            clap_history.clear();
         }
 
         let detector = detector.get_or_insert_with(|| {
@@ -201,29 +243,64 @@ fn run_detection(
                 GateVerdict::Pending => {}
                 GateVerdict::Fire(trigger) => {
                     quiet_gate = None;
+                    last_fire_at_ms = Some(trigger.second_at_ms);
                     if event_tx.send(EngineEvent::Trigger(trigger)).is_err() {
                         return;
                     }
                 }
                 GateVerdict::Discard => {
-                    println!("[trigger] discarded — sustained noise after the pair");
+                    let _ = event_tx.send(EngineEvent::Diagnostic(
+                        "[trigger] discarded — noise after the pair".to_owned(),
+                    ));
                     quiet_gate = None;
+                    matcher.reset();
                 }
             }
         }
 
         for clap in detector.push(&chunk.samples) {
-            println!(
-                "[clap] t={}ms peak={:.1}dB above_floor={:.1}dB flatness={:.2} confidence={:.2}",
-                clap.timestamp_ms,
-                clap.peak_db,
-                clap.above_floor_db,
-                clap.flatness,
-                clap.confidence
-            );
+            clap_history.push(clap.timestamp_ms);
+            let horizon = clap.timestamp_ms.saturating_sub(CLAP_HISTORY_MS);
+            clap_history.retain(|&t| t >= horizon);
+            let _ = event_tx.send(EngineEvent::Diagnostic(format!(
+                "[clap] t={}ms peak={:.1}dB above_floor={:.1}dB flatness={:.2}",
+                clap.timestamp_ms, clap.peak_db, clap.above_floor_db, clap.flatness
+            )));
+
+            // A late impulse right after a fire is evidence for the sparse
+            // impulse-train residual — recorded for tuning, not acted on.
+            if let Some(fired) = last_fire_at_ms {
+                if clap.timestamp_ms.saturating_sub(fired) <= 1000 {
+                    let _ = event_tx.send(EngineEvent::Diagnostic(
+                        "[clap] late impulse within 1s of a fire".to_owned(),
+                    ));
+                }
+            }
+
+            // A third impulse while a pair is awaiting confirmation means
+            // an impulse train, not a double clap.
+            if quiet_gate.is_some() {
+                quiet_gate = None;
+                matcher.reset();
+                let _ = event_tx.send(EngineEvent::Diagnostic(
+                    "[trigger] discarded — extra impulse during confirmation".to_owned(),
+                ));
+                continue;
+            }
+
             if let Some(trigger) = matcher.push(clap) {
-                // Held until the room stays quiet for the gate window.
-                quiet_gate = Some(QuietGate::new(trigger));
+                // Exactly-two rule: any further impulse in the pair's
+                // recent past marks an impulse train (bottle crush etc.).
+                let window = matcher_config.max_interval_ms + PAIR_ISOLATION_MARGIN_MS;
+                if impulse_train(&clap_history, trigger.second_at_ms, window) {
+                    matcher.reset();
+                    let _ = event_tx.send(EngineEvent::Diagnostic(
+                        "[trigger] discarded — impulse train, not a pair".to_owned(),
+                    ));
+                } else {
+                    // Held until the room stays quiet for the gate window.
+                    quiet_gate = Some(QuietGate::new(trigger));
+                }
             }
         }
     }
@@ -273,6 +350,44 @@ mod tests {
             assert!(matches!(gate.feed(1.0, 10), GateVerdict::Pending));
         }
         assert!(matches!(gate.feed(1.0, 10), GateVerdict::Fire(_)));
+    }
+
+    #[test]
+    fn fragmented_quiet_borderline_discards() {
+        let mut gate = QuietGate::new(trigger());
+        // Quiet runs interrupted 3+ times, cumulative loud stays under the
+        // limit: the window end flips the borderline to Discard, and the
+        // gate must never fire along the way.
+        let mut discarded = false;
+        let mut fired = false;
+        for _ in 0..8 {
+            for _ in 0..7 {
+                match gate.feed(2.0, 10) {
+                    GateVerdict::Discard => discarded = true,
+                    GateVerdict::Fire(_) => fired = true,
+                    GateVerdict::Pending => {}
+                }
+            }
+            match gate.feed(20.0, 10) {
+                GateVerdict::Discard => discarded = true,
+                GateVerdict::Fire(_) => fired = true,
+                GateVerdict::Pending => {}
+            }
+        }
+        assert!(discarded);
+        assert!(!fired);
+    }
+
+    #[test]
+    fn exactly_two_impulses_are_a_pair() {
+        assert!(!impulse_train(&[100, 400], 400, 1300));
+    }
+
+    #[test]
+    fn extra_impulse_marks_a_train() {
+        assert!(impulse_train(&[100, 250, 400], 400, 1300));
+        // An impulse older than the window does not count.
+        assert!(!impulse_train(&[100, 1600, 1900], 1900, 1300));
     }
 
     #[test]
