@@ -25,6 +25,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         })
         .collect();
 
+    layout::log_place(&format!("[run] {} action(s) start", actions.len()));
     let mut deferred_urls: Vec<usize> = Vec::new();
     let mut deferred_files: Vec<usize> = Vec::new();
     let mut app_placements: Vec<usize> = Vec::new();
@@ -39,6 +40,10 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
             )
         {
             {
+                layout::log_place(&format!(
+                    "[run] skip (display missing) {action} spec={:?}",
+                    action.display()
+                ));
                 outcomes[index] = ActionOutcome {
                     label: action.to_string(),
                     success: true,
@@ -126,6 +131,15 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
             }
         }
         let display = layout::display_frame_for(display_id.as_deref());
+        layout::log_place(&format!(
+            "[url-group] {} url(s) → {region:?} display={:?} frame=({}, {}, {}x{})",
+            indices.len(),
+            display_id,
+            display.origin.x,
+            display.origin.y,
+            display.size.width,
+            display.size.height
+        ));
         let urls: Vec<&str> = indices
             .iter()
             .filter_map(|&i| match &actions[i] {
@@ -135,10 +149,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
             .collect();
         match layout::open_urls_in_placed_window(&urls, region, display) {
             Ok(placement) => {
-                println!(
-                    "[layout] {} url(s) → {region:?} ({placement:?})",
-                    urls.len()
-                );
+                layout::log_place(&format!("[url-group] placed → {region:?} ({placement:?})"));
                 for &i in &indices {
                     outcomes[i] = ActionOutcome {
                         label: actions[i].to_string(),
@@ -148,7 +159,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 }
             }
             Err(err) => {
-                eprintln!("[layout] urls → {region:?} failed: {err}");
+                layout::log_place(&format!("[url-group] FAILED → {region:?}: {err}"));
                 for &i in &indices {
                     outcomes[i] = ActionOutcome {
                         label: actions[i].to_string(),
@@ -177,14 +188,16 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         let display = layout::display_frame_for(action.display());
         match layout::place_app_window(name, region, display) {
             Ok(placement) => {
-                println!("[layout] {action} → {region:?} ({placement:?})");
+                layout::log_place(&format!(
+                    "[place:app] {action} → {region:?} ({placement:?})"
+                ));
                 append_detail(
                     &mut outcomes[index],
                     &format!("→ {region:?} ({placement:?})"),
                 );
             }
             Err(err) => {
-                eprintln!("[layout] {action} → {region:?} failed: {err}");
+                layout::log_place(&format!("[place:app] {action} FAILED → {region:?}: {err}"));
                 // The app itself opened; a failed snap is noted but does not
                 // fail the action.
                 append_detail(&mut outcomes[index], &format!("placement failed: {err}"));
@@ -260,7 +273,9 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         let display = layout::display_frame_for(action.display());
         outcomes[index] = match layout::open_file_in_placed_window(path, region, display) {
             Ok(placement) => {
-                println!("[layout] {action} → {region:?} ({placement:?})");
+                layout::log_place(&format!(
+                    "[place:file] {action} → {region:?} ({placement:?})"
+                ));
                 ActionOutcome {
                     label: action.to_string(),
                     success: true,
@@ -268,7 +283,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 }
             }
             Err(err) => {
-                eprintln!("[layout] {action} → {region:?} failed: {err}");
+                layout::log_place(&format!("[place:file] {action} FAILED → {region:?}: {err}"));
                 ActionOutcome {
                     label: action.to_string(),
                     success: false,
@@ -377,6 +392,13 @@ fn restack_frontmost_first(actions: &[Action]) {
         return;
     }
     entries.sort_by_key(|(_, index)| std::cmp::Reverse(*index));
+    layout::log_place(&format!(
+        "[restack] entries (back→front): {:?}",
+        entries
+            .iter()
+            .map(|(n, i)| format!("{n}#{i}"))
+            .collect::<Vec<_>>()
+    ));
 
     std::thread::spawn(move || {
         let ready_flags = |entries: &[(String, usize)]| -> Vec<bool> {
@@ -390,6 +412,14 @@ fn restack_frontmost_first(actions: &[Action]) {
         while std::time::Instant::now() < deadline && ready_flags(&entries).contains(&false) {
             std::thread::sleep(RESTACK_POLL);
         }
+        let flags = ready_flags(&entries);
+        let unready: Vec<&str> = entries
+            .iter()
+            .zip(flags.iter())
+            .filter(|(_, ok)| !**ok)
+            .map(|((n, _), _)| n.as_str())
+            .collect();
+        layout::log_place(&format!("[restack] first pass, unready={unready:?}"));
         activate_in_order(&entries);
 
         let after_first = ready_flags(&entries);

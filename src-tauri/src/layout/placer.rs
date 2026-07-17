@@ -185,6 +185,10 @@ pub fn open_urls_in_placed_window(
         Some(pid) => ax::windows(&ax::application_element(pid)).unwrap_or_default(),
         None => Vec::new(),
     };
+    log_place(&format!(
+        "[url-window] snapshot={} window(s) before spawn",
+        snapshot.len()
+    ));
 
     Command::new(&chrome)
         .arg("--new-window")
@@ -199,8 +203,19 @@ pub fn open_urls_in_placed_window(
 
     let pid = wait_for_pid("Google Chrome")?;
     let app = ax::application_element(pid);
-    let window = wait_for_window(&app, &snapshot, "Google Chrome")?;
-    apply_placement(&window, region, display)
+    let window = match wait_for_window(&app, &snapshot, "Google Chrome") {
+        Ok(window) => window,
+        Err(err) => {
+            log_place(&format!("[url-window] fresh window NOT found: {err}"));
+            return Err(err);
+        }
+    };
+    let placement = apply_placement(&window, region, display)?;
+    log_place(&format!(
+        "[url-window] placed ({placement:?}) frame={:?}",
+        ax::window_frame(&window)
+    ));
+    Ok(placement)
 }
 
 /// Open a document with its default app and snap that app's window.
