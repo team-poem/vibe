@@ -32,8 +32,13 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     for (index, action) in actions.iter().enumerate() {
         // A placement bound to a disconnected display is that display's
         // setup — skip the whole action rather than opening it anywhere.
-        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
-            if !layout::display_connected(display_id) {
+        if action.region().is_some()
+            && matches!(
+                layout::resolve_display(action.display()),
+                layout::DisplayTarget::Missing
+            )
+        {
+            {
                 outcomes[index] = ActionOutcome {
                     label: action.to_string(),
                     success: true,
@@ -108,8 +113,11 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     // per target, each URL a tab of it. Targets on a disconnected display
     // open plainly instead of being forced onto another screen.
     for ((display_id, region), indices) in group_by_target(actions, &deferred_urls) {
-        if let Some(id) = display_id {
-            if !layout::display_connected(id) {
+        if matches!(
+            layout::resolve_display(display_id.as_deref()),
+            layout::DisplayTarget::Missing
+        ) {
+            {
                 for &i in &indices {
                     outcomes[i] = run_outcome(&actions[i]);
                     append_detail(&mut outcomes[i], "target display not connected");
@@ -117,7 +125,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 continue;
             }
         }
-        let display = layout::display_frame(display_id);
+        let display = layout::display_frame_for(display_id.as_deref());
         let urls: Vec<&str> = indices
             .iter()
             .filter_map(|&i| match &actions[i] {
@@ -157,13 +165,16 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
             continue;
         };
-        if let Some(id) = action.display() {
-            if !layout::display_connected(id) {
+        if matches!(
+            layout::resolve_display(action.display()),
+            layout::DisplayTarget::Missing
+        ) {
+            {
                 append_detail(&mut outcomes[index], "target display not connected");
                 continue;
             }
         }
-        let display = layout::display_frame(action.display());
+        let display = layout::display_frame_for(action.display());
         match layout::place_app_window(name, region, display) {
             Ok(placement) => {
                 println!("[layout] {action} → {region:?} ({placement:?})");
@@ -191,12 +202,15 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
             let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
                 continue;
             };
-            if let Some(id) = action.display() {
-                if !layout::display_connected(id) {
+            if matches!(
+                layout::resolve_display(action.display()),
+                layout::DisplayTarget::Missing
+            ) {
+                {
                     continue;
                 }
             }
-            let display = layout::display_frame(action.display());
+            let display = layout::display_frame_for(action.display());
             layout::reassert_app_placement(name, region, display);
         }
     }
@@ -208,14 +222,17 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         let (Action::OpenFile { path, .. }, Some(region)) = (action, action.region()) else {
             continue;
         };
-        if let Some(id) = action.display() {
-            if !layout::display_connected(id) {
+        if matches!(
+            layout::resolve_display(action.display()),
+            layout::DisplayTarget::Missing
+        ) {
+            {
                 outcomes[index] = run_outcome(action);
                 append_detail(&mut outcomes[index], "target display not connected");
                 continue;
             }
         }
-        let display = layout::display_frame(action.display());
+        let display = layout::display_frame_for(action.display());
         outcomes[index] = match layout::open_file_in_placed_window(path, region, display) {
             Ok(placement) => {
                 println!("[layout] {action} → {region:?} ({placement:?})");
@@ -253,8 +270,13 @@ pub fn routine_already_assembled(actions: &[Action]) -> bool {
     for action in actions {
         // Actions bound to a disconnected display are skipped by
         // run_routine, so they must not count here either.
-        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
-            if !layout::display_connected(display_id) {
+        if action.region().is_some()
+            && matches!(
+                layout::resolve_display(action.display()),
+                layout::DisplayTarget::Missing
+            )
+        {
+            {
                 continue;
             }
         }
@@ -288,8 +310,13 @@ pub fn routine_already_assembled(actions: &[Action]) -> bool {
 fn restack_frontmost_first(actions: &[Action]) {
     let mut entries: Vec<(String, usize)> = Vec::new();
     for (index, action) in actions.iter().enumerate() {
-        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
-            if !layout::display_connected(display_id) {
+        if action.region().is_some()
+            && matches!(
+                layout::resolve_display(action.display()),
+                layout::DisplayTarget::Missing
+            )
+        {
+            {
                 continue;
             }
         }
@@ -430,7 +457,7 @@ fn append_detail(outcome: &mut ActionOutcome, extra: &str) {
 
 /// Group action indices by their (display, region) target, preserving the
 /// order in which targets first appear.
-type PlacementTarget = (Option<u32>, Region);
+type PlacementTarget = (Option<String>, Region);
 
 fn group_by_target(actions: &[Action], indices: &[usize]) -> Vec<(PlacementTarget, Vec<usize>)> {
     let mut groups: Vec<(PlacementTarget, Vec<usize>)> = Vec::new();
@@ -438,7 +465,7 @@ fn group_by_target(actions: &[Action], indices: &[usize]) -> Vec<(PlacementTarge
         let Some(region) = actions[index].region() else {
             continue;
         };
-        let target = (actions[index].display(), region);
+        let target = (actions[index].display().map(str::to_owned), region);
         match groups.iter_mut().find(|(t, _)| *t == target) {
             Some((_, group)) => group.push(index),
             None => groups.push((target, vec![index])),
@@ -451,12 +478,12 @@ fn group_by_target(actions: &[Action], indices: &[usize]) -> Vec<(PlacementTarge
 mod tests {
     use super::*;
 
-    fn url_action(url: &str, region: Region, display: Option<u32>) -> Action {
+    fn url_action(url: &str, region: Region, display: Option<&str>) -> Action {
         match Action::open_url(url) {
             Action::OpenUrl { url, .. } => Action::OpenUrl {
                 url,
                 region: Some(region),
-                display,
+                display: display.map(str::to_owned),
             },
             other => other,
         }
@@ -479,7 +506,7 @@ mod tests {
     fn same_region_on_different_displays_stays_separate() {
         let actions = vec![
             url_action("https://a.com", Region::RightHalf, None),
-            url_action("https://b.com", Region::RightHalf, Some(2)),
+            url_action("https://b.com", Region::RightHalf, Some("uuid-b")),
         ];
         let groups = group_by_target(&actions, &[0, 1]);
         assert_eq!(groups.len(), 2);
