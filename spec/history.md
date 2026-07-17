@@ -1733,3 +1733,17 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - cargo test 68개(＋마이그레이션)·live_probe 스모크 통과, clippy 클린.
+
+## 2026-07-17 (fix/placement-telemetry)
+
+### 변경
+
+- 배치 파이프라인 전 구간 계측을 placement.log 로 영속화: 실행 시작/
+  디스플레이 스킵 사유, URL 그룹(대상 프레임·스냅샷 창 수·fresh 창
+  탐지 성패·최종 프레임), 앱/문서 배치 성패, 재스택 엔트리와 1차 패스
+  시점의 unready 목록. println 전용이라 Finder 실행에서 소실되던
+  관측 사각지대 제거 — "PDF 미배치·순서 붕괴" 재보고의 정밀 진단 목적.
+
+### 검증
+
+- cargo test/clippy 통과. 다음 실측 1회로 원인 특정 예정.
