@@ -3,11 +3,13 @@ mod placer;
 mod probe;
 
 pub use placer::{
-    app_window_ready, file_handler_app, is_trusted, log_place, open_file_in_placed_window,
-    open_file_unplaced, open_urls_in_placed_window, open_urls_unplaced, place_app_window,
-    reassert_app_placement, LayoutError,
+    app_window_ready, apps_all_have_windows, file_handler_app, is_trusted, log_place,
+    open_file_in_placed_window, open_file_unplaced, open_urls_in_placed_window, open_urls_unplaced,
+    place_app_window, reassert_app_placement, LayoutError,
 };
-pub(crate) use probe::{find_pid as probe_find_pid, pid_has_real_window};
+pub(crate) use probe::{
+    find_pid as probe_find_pid, find_pids as probe_find_pids, pid_has_real_window, real_window_pids,
+};
 
 use core_graphics::display::CGDisplay;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};

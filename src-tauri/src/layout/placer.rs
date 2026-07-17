@@ -117,6 +117,22 @@ pub fn app_window_ready(app_name: &str) -> bool {
     crate::layout::pid_has_real_window(pid)
 }
 
+/// Batch variant for the assembled guard: one process scan and one
+/// window-list enumeration decide every app at once (~15 ms for a whole
+/// routine, vs. one scan + one enumeration per app).
+pub fn apps_all_have_windows(app_names: &[String]) -> bool {
+    if app_names.is_empty() {
+        return false;
+    }
+    let pids = crate::layout::probe_find_pids(app_names);
+    if pids.iter().any(Option::is_none) {
+        return false;
+    }
+    let windowed = crate::layout::real_window_pids();
+    pids.iter()
+        .all(|pid| windowed.contains(&i64::from(pid.unwrap_or(0))))
+}
+
 /// Snap or, for `Centered`, move-only: the window keeps its natural size
 /// and is centered on the target display.
 fn apply_placement(

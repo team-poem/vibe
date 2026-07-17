@@ -45,11 +45,12 @@ fn path_matches_app(path: &str, app_name: &str) -> bool {
     }
 }
 
-/// Pid of the named app's main process, via executable path lookup.
-pub fn find_pid(app_name: &str) -> Option<i32> {
+/// Visit every process as `(pid, executable path)` in one libproc scan;
+/// stop early when the visitor returns `false`.
+fn scan_processes(mut visit: impl FnMut(i32, &str) -> bool) {
     let needed = unsafe { proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0) };
     if needed <= 0 {
-        return None;
+        return;
     }
     // Head-room for processes spawned between the two calls.
     let capacity = needed as usize / std::mem::size_of::<i32>() + 64;
@@ -63,7 +64,7 @@ pub fn find_pid(app_name: &str) -> Option<i32> {
         )
     };
     if written <= 0 {
-        return None;
+        return;
     }
     let count = written as usize / std::mem::size_of::<i32>();
 
@@ -83,20 +84,58 @@ pub fn find_pid(app_name: &str) -> Option<i32> {
             continue;
         }
         let path = String::from_utf8_lossy(&buffer[..len as usize]);
-        if path_matches_app(&path, app_name) {
-            return Some(pid);
+        if !visit(pid, &path) {
+            return;
         }
     }
-    None
+}
+
+/// Pid of the named app's main process, via executable path lookup.
+pub fn find_pid(app_name: &str) -> Option<i32> {
+    let mut found = None;
+    scan_processes(|pid, path| {
+        if path_matches_app(path, app_name) {
+            found = Some(pid);
+            false
+        } else {
+            true
+        }
+    });
+    found
+}
+
+/// Resolve several app names with a single process scan. The result is
+/// aligned with the input order.
+pub fn find_pids(app_names: &[String]) -> Vec<Option<i32>> {
+    let mut found: Vec<Option<i32>> = vec![None; app_names.len()];
+    let mut missing = app_names.len();
+    scan_processes(|pid, path| {
+        for (slot, name) in found.iter_mut().zip(app_names.iter()) {
+            if slot.is_none() && path_matches_app(path, name) {
+                *slot = Some(pid);
+                missing -= 1;
+            }
+        }
+        missing > 0
+    });
+    found
 }
 
 /// True when the process owns at least one real window on any Space.
 /// Matching is by owner pid — window owner names are localized and
 /// unreliable. Needs no Accessibility permission.
 pub fn pid_has_real_window(pid: i32) -> bool {
+    real_window_pids().contains(&i64::from(pid))
+}
+
+/// Owner pids that have at least one real window, from one window-list
+/// enumeration — the batch counterpart of [`pid_has_real_window`], sharing
+/// the same discriminant constants.
+pub fn real_window_pids() -> std::collections::HashSet<i64> {
+    let mut owners = std::collections::HashSet::new();
     let raw = unsafe { CGWindowListCopyWindowInfo(CG_WINDOW_LIST_OPTION_ALL, 0) };
     if raw.is_null() {
-        return false;
+        return owners;
     }
     let windows: CFArray = unsafe { CFArray::wrap_under_create_rule(raw) };
 
@@ -113,7 +152,7 @@ pub fn pid_has_real_window(pid: i32) -> bool {
         let Some(owner) = dict_i64(&dict, &pid_key) else {
             continue;
         };
-        if owner != i64::from(pid) {
+        if owners.contains(&owner) {
             continue;
         }
         if dict_i64(&dict, &layer_key) != Some(0) {
@@ -127,10 +166,10 @@ pub fn pid_has_real_window(pid: i32) -> bool {
         let width = dict_f64(&bounds, &width_key).unwrap_or(0.0);
         let height = dict_f64(&bounds, &height_key).unwrap_or(0.0);
         if width >= MIN_WINDOW_WIDTH && height >= MIN_WINDOW_HEIGHT {
-            return true;
+            owners.insert(owner);
         }
     }
-    false
+    owners
 }
 
 fn dict_i64(dict: &CFDictionary, key: &CFString) -> Option<i64> {
