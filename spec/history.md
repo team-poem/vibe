@@ -1770,3 +1770,24 @@ Performance Pass, 다중 모니터.
   기준으로 변경 (`find_all_pids`).
 - 회귀 테스트: 클론 경로 매칭. 라이브 프로브로 chrome pid·AX 창 3개
   확인.
+
+## 2026-07-17 (fix/chrome-cold-start)
+
+### 진단 (텔레메트리)
+
+- 클론 픽스 후 실행: PDF 는 맥북 전체화면 정상 배치, 재스택 unready=[],
+  가드 정상 — 그러나 URL 그룹(7탭)은 snapshot=0(Chrome 콜드 스타트)에서
+  8s 창 대기 실패. 콜드 스타트 중 핸드오프 스텁(.app 경로)과 본체(클론
+  경로)가 시간차로 등장하는데, 대기가 최초 1회 잡은 pid 에 고정되어
+  창이 생기는 본체 pid 를 놓침. 창은 만들어지되 배치를 못 받음.
+
+### 변경
+
+- Chrome 창 대기를 `wait_for_fresh_chrome_window` 로 교체: 매 폴마다
+  이름에 응답하는 모든 후보 pid 를 재탐색해 각 pid 의 AX 창에서 스냅샷
+  대비 신규 창을 찾음. 단일 pid 고정 대기(wait_for_window) 제거.
+
+### 검증
+
+- cargo test/clippy 통과. 라이브 검증: Chrome 종료 상태(콜드)에서 박수
+  → 7탭 창 우측 배치 확인이 판정 기준.
