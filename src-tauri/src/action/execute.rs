@@ -26,6 +26,32 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         .collect();
 
     layout::log_place(&format!("[run] {} action(s) start", actions.len()));
+
+    // Right after wake, external displays re-register a few seconds late.
+    // If a placed action references a display that is momentarily absent,
+    // wait briefly before deciding to skip it.
+    let any_display_missing = |actions: &[Action]| {
+        actions.iter().any(|action| {
+            action.region().is_some()
+                && matches!(
+                    layout::resolve_display(action.display()),
+                    layout::DisplayTarget::Missing
+                )
+        })
+    };
+    if any_display_missing(actions) {
+        for _ in 0..6 {
+            std::thread::sleep(Duration::from_millis(500));
+            if !any_display_missing(actions) {
+                break;
+            }
+        }
+        layout::log_place(&format!(
+            "[run] display re-enumeration wait done (still missing={})",
+            any_display_missing(actions)
+        ));
+    }
+
     let mut deferred_urls: Vec<usize> = Vec::new();
     let mut app_path_opens: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
