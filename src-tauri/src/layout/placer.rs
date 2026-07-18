@@ -11,6 +11,12 @@ use crate::layout::ax::{self, AxElement, Placement};
 use crate::layout::Region;
 
 const WINDOW_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
+/// Chrome cold-starting under a launch storm can take well past 8 s to
+/// show its first window — measured live at ~14 s with 7 tabs.
+const CHROME_WINDOW_WAIT: Duration = Duration::from_secs(20);
+/// In the dedicated-document route, fall back to "the only fresh window"
+/// when no title matches for this long.
+const CHROME_TITLE_FALLBACK: Duration = Duration::from_secs(6);
 const WINDOW_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, thiserror::Error)]
@@ -67,22 +73,66 @@ pub fn place_app_window(
     region: Region,
     display: CGRect,
 ) -> Result<Placement, LayoutError> {
+    place_app_window_excluding(app_name, region, display, &[]).map(|(placement, _)| placement)
+}
+
+/// Placement that also returns the window it used and skips windows in
+/// `exclude`, so repeated actions on one app each claim their own window.
+pub fn place_app_window_excluding(
+    app_name: &str,
+    region: Region,
+    display: CGRect,
+    exclude: &[ax::AxElement],
+) -> Result<(Placement, ax::AxElement), LayoutError> {
     if !is_trusted(false) {
         return Err(LayoutError::NotTrusted);
     }
     let pid = wait_for_pid(app_name)?;
     let app = ax::application_element(pid);
-    let window = wait_for_main_window(&app, app_name)?;
-    apply_placement(&window, region, display)
+    let window = wait_for_main_window_excluding(&app, app_name, exclude)?;
+    let placement = apply_placement(&window, region, display)?;
+    Ok((placement, window))
+}
+
+/// Wait until the app owns at least `min_windows` real windows — the
+/// stagger gate between two "open folder" actions on the same app.
+pub fn wait_app_window_count(app_name: &str, min_windows: usize, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(pid) = find_pid(app_name) {
+            if crate::layout::pid_real_window_count(pid) >= min_windows {
+                return true;
+            }
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(WINDOW_POLL_INTERVAL);
+    }
 }
 
 /// Wait until the app has windows, then return the largest one — the first
 /// AX window can be a splash screen or utility panel, not the main window.
 fn wait_for_main_window(app: &ax::AxElement, label: &str) -> Result<ax::AxElement, LayoutError> {
+    wait_for_main_window_excluding(app, label, &[])
+}
+
+/// Like [`wait_for_main_window`], but never returns a window already
+/// claimed by an earlier action — two "open this folder" actions on the
+/// same app must land on two different windows.
+fn wait_for_main_window_excluding(
+    app: &ax::AxElement,
+    label: &str,
+    exclude: &[ax::AxElement],
+) -> Result<ax::AxElement, LayoutError> {
     let deadline = Instant::now() + WINDOW_WAIT_TIMEOUT;
     loop {
         if let Ok(windows) = ax::windows(app) {
-            if let Some(window) = pick_main_window(windows) {
+            let fresh: Vec<ax::AxElement> = windows
+                .into_iter()
+                .filter(|w| !exclude.iter().any(|used| ax::same_element(w, used)))
+                .collect();
+            if let Some(window) = pick_main_window(fresh) {
                 return Ok(window);
             }
         }
@@ -214,13 +264,88 @@ pub fn open_urls_in_placed_window(
     Ok(placement)
 }
 
+/// Open a document in its own Chrome window and place it, identifying the
+/// right window by its title (the file name): the URL tab-group window can
+/// appear late during a cold start and must never be mistaken for the
+/// document window.
+fn open_path_in_dedicated_chrome_window(
+    path: &str,
+    region: Region,
+    display: CGRect,
+) -> Result<Placement, LayoutError> {
+    let Some(chrome) = find_chrome_binary() else {
+        return Err(LayoutError::AppNotFound("Google Chrome".to_owned()));
+    };
+    let snapshot = match find_pid("Google Chrome") {
+        Some(pid) => ax::windows(&ax::application_element(pid)).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Command::new(&chrome)
+        .arg("--new-window")
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| LayoutError::Spawn {
+            command: "chrome --new-window",
+            source,
+        })?;
+
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let started = Instant::now();
+    let deadline = started + CHROME_WINDOW_WAIT;
+    loop {
+        let candidates = crate::layout::probe_find_all_pids(&["Google Chrome".to_owned()])
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let mut fresh: Vec<ax::AxElement> = Vec::new();
+        for pid in candidates {
+            let app = ax::application_element(pid);
+            let Ok(windows) = ax::windows(&app) else {
+                continue;
+            };
+            fresh.extend(
+                windows
+                    .into_iter()
+                    .filter(|w| !snapshot.iter().any(|old| ax::same_element(w, old))),
+            );
+        }
+        let by_title = fresh.iter().position(|w| {
+            ax::window_title(w)
+                .map(|title| !stem.is_empty() && title.to_lowercase().contains(&stem))
+                .unwrap_or(false)
+        });
+        let chosen = by_title.or_else(|| {
+            // No title match yet: only fall back to "the single fresh
+            // window" once the title has had a fair chance to appear.
+            (started.elapsed() >= CHROME_TITLE_FALLBACK && fresh.len() == 1).then_some(0)
+        });
+        if let Some(index) = chosen {
+            let window = fresh.swap_remove(index);
+            log_place(&format!(
+                "[place:file] chrome window chosen (title_match={})",
+                by_title.is_some()
+            ));
+            return apply_placement(&window, region, display);
+        }
+        if Instant::now() >= deadline {
+            return Err(LayoutError::WindowTimeout("Google Chrome".to_owned()));
+        }
+        std::thread::sleep(WINDOW_POLL_INTERVAL);
+    }
+}
+
 /// Wait for a Chrome window that was not in `snapshot`, re-resolving the
 /// pid on every poll. During a cold start the `--new-window` hand-off stub
 /// (real `.app` path) and the browser main (code-sign-clone path) appear
 /// at different moments — watching a single pid captured once misses the
 /// window, which lands on whichever process wins.
 fn wait_for_fresh_chrome_window(snapshot: &[AxElement]) -> Result<AxElement, LayoutError> {
-    let deadline = Instant::now() + WINDOW_WAIT_TIMEOUT;
+    let deadline = Instant::now() + CHROME_WINDOW_WAIT;
     loop {
         let candidates = crate::layout::probe_find_all_pids(&["Google Chrome".to_owned()])
             .into_iter()
@@ -270,7 +395,7 @@ pub fn open_file_in_placed_window(
     // display's tab group — onto this file's region.
     if handler.as_deref() == Some("Google Chrome") && find_chrome_binary().is_some() {
         log_place("[place:file] chrome is the handler → dedicated-window route");
-        return open_urls_in_placed_window(&[path], region, display);
+        return open_path_in_dedicated_chrome_window(path, region, display);
     }
 
     let snapshot = handler

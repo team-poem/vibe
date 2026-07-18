@@ -27,6 +27,8 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
 
     layout::log_place(&format!("[run] {} action(s) start", actions.len()));
     let mut deferred_urls: Vec<usize> = Vec::new();
+    let mut app_path_opens: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut deferred_files: Vec<usize> = Vec::new();
     let mut app_placements: Vec<usize> = Vec::new();
 
@@ -66,6 +68,26 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 continue;
             }
             _ => {}
+        }
+        // A second "open this folder" on the same app must wait for the
+        // previous window: odoc events that arrive together are merged
+        // into one multi-root workspace window (Cursor/VS Code).
+        if let Action::OpenApp {
+            name,
+            path: Some(_),
+            ..
+        } = action
+        {
+            let prior = *app_path_opens.get(name.as_str()).unwrap_or(&0);
+            if prior > 0 {
+                let ok = layout::wait_app_window_count(name, prior, Duration::from_secs(8));
+                layout::log_place(&format!(
+                    "[open] staggered {name} window #{} (previous visible={ok})",
+                    prior + 1
+                ));
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            app_path_opens.insert(name.clone(), prior + 1);
         }
         outcomes[index] = run_outcome(action);
         if action.region().is_some() {
@@ -150,6 +172,14 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         match layout::open_urls_in_placed_window(&urls, region, display) {
             Ok(placement) => {
                 layout::log_place(&format!("[url-group] placed → {region:?} ({placement:?})"));
+                // Bring the freshly placed tab group forward once while it
+                // loads: media sites hold autoplay when their window loads
+                // hidden. The final restack re-asserts the user's order.
+                let _ = Command::new("open")
+                    .args(["-a", "Google Chrome"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
                 for &i in &indices {
                     outcomes[i] = ActionOutcome {
                         label: actions[i].to_string(),
@@ -171,6 +201,8 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         }
     }
 
+    let mut used_windows: std::collections::HashMap<String, Vec<layout::WindowHandle>> =
+        std::collections::HashMap::new();
     for &index in &app_placements {
         let action = &actions[index];
         let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
@@ -186,11 +218,16 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
             }
         }
         let display = layout::display_frame_for(action.display());
-        match layout::place_app_window(name, region, display) {
-            Ok(placement) => {
+        let exclude = used_windows
+            .get(name.as_str())
+            .map(|used| used.as_slice())
+            .unwrap_or(&[]);
+        match layout::place_app_window_excluding(name, region, display, exclude) {
+            Ok((placement, window)) => {
                 layout::log_place(&format!(
                     "[place:app] {action} → {region:?} ({placement:?})"
                 ));
+                used_windows.entry(name.clone()).or_default().push(window);
                 append_detail(
                     &mut outcomes[index],
                     &format!("→ {region:?} ({placement:?})"),

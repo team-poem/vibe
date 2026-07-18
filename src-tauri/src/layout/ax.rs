@@ -6,10 +6,11 @@ use std::ffi::c_void;
 
 use accessibility_sys::{
     kAXErrorAPIDisabled, kAXErrorCannotComplete, kAXErrorSuccess, kAXFocusedApplicationAttribute,
-    kAXPositionAttribute, kAXSizeAttribute, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint,
-    kAXValueTypeCGSize, kAXWindowsAttribute, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
-    AXUIElementCopyAttributeValue, AXUIElementCreateApplication, AXUIElementCreateSystemWide,
-    AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate, AXValueGetValue, AXValueRef,
+    kAXPositionAttribute, kAXSizeAttribute, kAXTitleAttribute, kAXTrustedCheckOptionPrompt,
+    kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowsAttribute, AXIsProcessTrusted,
+    AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
+    AXUIElementCreateSystemWide, AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate,
+    AXValueGetValue, AXValueRef,
 };
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFType, CFTypeRef, TCFType};
@@ -123,6 +124,13 @@ fn window_position(window: &AxElement) -> Option<CGPoint> {
         )
     };
     ok.then_some(point)
+}
+
+/// Title of a window, e.g. to tell a document window apart from a tab
+/// group when one app owns both.
+pub fn window_title(window: &AxElement) -> Option<String> {
+    let value = copy_attribute(window, kAXTitleAttribute).ok()?;
+    value.downcast::<CFString>().map(|title| title.to_string())
 }
 
 /// Current size of a window, for move-without-resize placement.

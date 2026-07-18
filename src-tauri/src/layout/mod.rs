@@ -2,14 +2,16 @@ mod ax;
 mod placer;
 mod probe;
 
+pub(crate) use ax::AxElement as WindowHandle;
 pub use placer::{
     app_window_ready, apps_all_have_windows, file_handler_app, is_trusted, log_place,
     open_file_in_placed_window, open_file_unplaced, open_urls_in_placed_window, open_urls_unplaced,
-    place_app_window, reassert_app_placement, LayoutError,
+    place_app_window, place_app_window_excluding, reassert_app_placement, wait_app_window_count,
+    LayoutError,
 };
 pub(crate) use probe::{
     find_all_pids as probe_find_all_pids, find_pid as probe_find_pid, pid_has_real_window,
-    real_window_pids,
+    pid_real_window_count, real_window_pids,
 };
 
 use core_graphics::display::CGDisplay;
