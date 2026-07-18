@@ -146,11 +146,25 @@ pub fn pid_has_real_window(pid: i32) -> bool {
     real_window_pids().contains(&i64::from(pid))
 }
 
+/// Real windows currently owned by `pid` — used to stagger repeated
+/// same-app opens so each lands in its own window.
+pub fn pid_real_window_count(pid: i32) -> usize {
+    real_window_counts()
+        .get(&i64::from(pid))
+        .copied()
+        .unwrap_or(0)
+}
+
 /// Owner pids that have at least one real window, from one window-list
 /// enumeration — the batch counterpart of [`pid_has_real_window`], sharing
 /// the same discriminant constants.
 pub fn real_window_pids() -> std::collections::HashSet<i64> {
-    let mut owners = std::collections::HashSet::new();
+    real_window_counts().into_keys().collect()
+}
+
+/// Real-window count per owner pid, from one enumeration.
+pub fn real_window_counts() -> std::collections::HashMap<i64, usize> {
+    let mut owners = std::collections::HashMap::new();
     let raw = unsafe { CGWindowListCopyWindowInfo(CG_WINDOW_LIST_OPTION_ALL, 0) };
     if raw.is_null() {
         return owners;
@@ -170,9 +184,6 @@ pub fn real_window_pids() -> std::collections::HashSet<i64> {
         let Some(owner) = dict_i64(&dict, &pid_key) else {
             continue;
         };
-        if owners.contains(&owner) {
-            continue;
-        }
         if dict_i64(&dict, &layer_key) != Some(0) {
             continue;
         }
@@ -184,7 +195,7 @@ pub fn real_window_pids() -> std::collections::HashSet<i64> {
         let width = dict_f64(&bounds, &width_key).unwrap_or(0.0);
         let height = dict_f64(&bounds, &height_key).unwrap_or(0.0);
         if width >= MIN_WINDOW_WIDTH && height >= MIN_WINDOW_HEIGHT {
-            owners.insert(owner);
+            *owners.entry(owner).or_insert(0) += 1;
         }
     }
     owners
