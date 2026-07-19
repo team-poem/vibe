@@ -1841,3 +1841,19 @@ Performance Pass, 다중 모니터.
 ### 검증
 
 - cargo test/clippy 통과.
+
+## 2026-07-19 (feat/autoplay-flag)
+
+### 변경
+
+- Chrome 스폰 3경로(URL 그룹·전용 문서 창·미신뢰 폴백)에
+  `--autoplay-policy=no-user-gesture-required` 플래그 추가. 실행 중인
+  인스턴스로 핸드오프될 땐 무시되고, 루틴이 Chrome 을 콜드 스타트하는
+  경우(작업 시작 시나리오)에만 적용되어 활성 탭의 미디어가 제스처 없이
+  재생됨. 트레이드오프: 해당 Chrome 세션 동안 전 사이트 자동재생 허용
+  — 사용자 승인 완료.
+
+### 검증
+
+- cargo test/clippy 통과. 라이브: Chrome 종료 상태에서 박수 → 유튜브
+  활성 탭 자동재생 확인이 판정 기준.

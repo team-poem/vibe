@@ -14,6 +14,11 @@ const WINDOW_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 /// Chrome cold-starting under a launch storm can take well past 8 s to
 /// show its first window — measured live at ~14 s with 7 tabs.
 const CHROME_WINDOW_WAIT: Duration = Duration::from_secs(20);
+/// Applied only when our spawn cold-starts Chrome (flags are ignored on
+/// hand-off to a running instance): media pages opened without a user
+/// gesture may start playback. Session-wide until Chrome quits — accepted
+/// trade-off so the routine's music actually starts.
+const CHROME_AUTOPLAY_FLAG: &str = "--autoplay-policy=no-user-gesture-required";
 /// In the dedicated-document route, fall back to "the only fresh window"
 /// when no title matches for this long.
 const CHROME_TITLE_FALLBACK: Duration = Duration::from_secs(6);
@@ -239,6 +244,7 @@ pub fn open_urls_in_placed_window(
     ));
 
     Command::new(&chrome)
+        .arg(CHROME_AUTOPLAY_FLAG)
         .arg("--new-window")
         .args(urls)
         .stdout(Stdio::null())
@@ -281,6 +287,7 @@ fn open_path_in_dedicated_chrome_window(
         None => Vec::new(),
     };
     Command::new(&chrome)
+        .arg(CHROME_AUTOPLAY_FLAG)
         .arg("--new-window")
         .arg(path)
         .stdout(Stdio::null())
@@ -645,6 +652,7 @@ pub fn open_urls_unplaced(urls: &[&str]) -> Result<(), LayoutError> {
         return Ok(());
     };
     Command::new(&chrome)
+        .arg(CHROME_AUTOPLAY_FLAG)
         .arg("--new-window")
         .args(urls)
         .stdout(Stdio::null())
