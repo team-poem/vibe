@@ -64,6 +64,19 @@ impl RoutineStore {
                 eprintln!("[routine] failed to persist recovered config: {err}");
             }
         }
+        // Numeric display ids drift across reboots. Migrate any that still
+        // match a connected display to that display's stable UUID; ids
+        // that no longer resolve are left untouched (skipped at run time
+        // and surfaced in the editor) — never auto-retargeted.
+        {
+            let pairs = crate::layout::display_id_uuid_pairs();
+            let mut config = store.lock();
+            if migrate_display_ids(&mut config, &pairs) {
+                if let Err(err) = store.save_locked(&config) {
+                    eprintln!("[routine] failed to persist display migration: {err}");
+                }
+            }
+        }
         (store, report)
     }
 
@@ -173,6 +186,26 @@ impl RoutineStore {
     }
 }
 
+/// Rewrite legacy numeric display specs to stable UUIDs when the id still
+/// matches a connected display. Returns true when anything changed.
+fn migrate_display_ids(config: &mut RoutineConfig, pairs: &[(String, String)]) -> bool {
+    let mut changed = false;
+    for routine in &mut config.routines {
+        for action in &mut routine.actions {
+            let Some(spec) = action.display().map(str::to_owned) else {
+                continue;
+            };
+            if let Some((_, uuid)) = pairs.iter().find(|(id, _)| *id == spec) {
+                if *uuid != spec {
+                    *action.display_mut() = Some(uuid.clone());
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
 fn corrupt_backup_path(path: &Path) -> PathBuf {
     path.with_extension("json.corrupt")
 }
@@ -180,6 +213,27 @@ fn corrupt_backup_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrates_numeric_display_specs_to_uuids() {
+        let mut config = RoutineConfig::default_config();
+        let mut r = routine("r1", "test");
+        let mut action = Action::open_app("Cursor");
+        *action.display_mut() = Some("2".to_owned());
+        let mut orphan = Action::open_app("Figma");
+        *orphan.display_mut() = Some("9".to_owned());
+        r.actions = vec![action, orphan];
+        config.routines.push(r);
+
+        let pairs = vec![("2".to_owned(), "UUID-AAA".to_owned())];
+        assert!(migrate_display_ids(&mut config, &pairs));
+        let actions = &config.routines.last().unwrap().actions;
+        assert_eq!(actions[0].display(), Some("UUID-AAA"));
+        // Unresolvable legacy ids stay untouched — never auto-retargeted.
+        assert_eq!(actions[1].display(), Some("9"));
+        // Second run is a no-op.
+        assert!(!migrate_display_ids(&mut config, &pairs));
+    }
 
     fn routine(id: &str, name: &str) -> Routine {
         Routine {

@@ -25,15 +25,53 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         })
         .collect();
 
+    layout::log_place(&format!("[run] {} action(s) start", actions.len()));
+
+    // Right after wake, external displays re-register a few seconds late.
+    // If a placed action references a display that is momentarily absent,
+    // wait briefly before deciding to skip it.
+    let any_display_missing = |actions: &[Action]| {
+        actions.iter().any(|action| {
+            action.region().is_some()
+                && matches!(
+                    layout::resolve_display(action.display()),
+                    layout::DisplayTarget::Missing
+                )
+        })
+    };
+    if any_display_missing(actions) {
+        for _ in 0..6 {
+            std::thread::sleep(Duration::from_millis(500));
+            if !any_display_missing(actions) {
+                break;
+            }
+        }
+        layout::log_place(&format!(
+            "[run] display re-enumeration wait done (still missing={})",
+            any_display_missing(actions)
+        ));
+    }
+
     let mut deferred_urls: Vec<usize> = Vec::new();
+    let mut app_path_opens: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut deferred_files: Vec<usize> = Vec::new();
     let mut app_placements: Vec<usize> = Vec::new();
 
     for (index, action) in actions.iter().enumerate() {
         // A placement bound to a disconnected display is that display's
         // setup — skip the whole action rather than opening it anywhere.
-        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
-            if !layout::display_connected(display_id) {
+        if action.region().is_some()
+            && matches!(
+                layout::resolve_display(action.display()),
+                layout::DisplayTarget::Missing
+            )
+        {
+            {
+                layout::log_place(&format!(
+                    "[run] skip (display missing) {action} spec={:?}",
+                    action.display()
+                ));
                 outcomes[index] = ActionOutcome {
                     label: action.to_string(),
                     success: true,
@@ -57,6 +95,26 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
             }
             _ => {}
         }
+        // A second "open this folder" on the same app must wait for the
+        // previous window: odoc events that arrive together are merged
+        // into one multi-root workspace window (Cursor/VS Code).
+        if let Action::OpenApp {
+            name,
+            path: Some(_),
+            ..
+        } = action
+        {
+            let prior = *app_path_opens.get(name.as_str()).unwrap_or(&0);
+            if prior > 0 {
+                let ok = layout::wait_app_window_count(name, prior, Duration::from_secs(8));
+                layout::log_place(&format!(
+                    "[open] staggered {name} window #{} (previous visible={ok})",
+                    prior + 1
+                ));
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            app_path_opens.insert(name.clone(), prior + 1);
+        }
         outcomes[index] = run_outcome(action);
         if action.region().is_some() {
             app_placements.push(index);
@@ -67,11 +125,36 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         !deferred_urls.is_empty() || !deferred_files.is_empty() || !app_placements.is_empty();
     if wants_layout && !layout::is_trusted(false) {
         crate::layout::log_place(
-            "[layout] accessibility permission missing; skipping window placement",
+            "[layout] accessibility permission missing; opening without placement",
         );
-        for index in deferred_urls.into_iter().chain(deferred_files) {
-            outcomes[index] = run_outcome(&actions[index]);
-            append_detail(&mut outcomes[index], "placement skipped (no permission)");
+        // Placed URLs and Chrome-handled files still get their own fresh
+        // browser window — a plain `open` would pile them as tabs onto
+        // whichever window is frontmost.
+        let urls: Vec<&str> = deferred_urls
+            .iter()
+            .filter_map(|&i| match &actions[i] {
+                Action::OpenUrl { url, .. } => Some(url.as_str()),
+                _ => None,
+            })
+            .collect();
+        let url_outcome = layout::open_urls_unplaced(&urls);
+        for &i in &deferred_urls {
+            outcomes[i] = ActionOutcome {
+                label: actions[i].to_string(),
+                success: url_outcome.is_ok(),
+                detail: "opened without placement (no permission)".to_owned(),
+            };
+        }
+        for index in deferred_files {
+            let Action::OpenFile { path, .. } = &actions[index] else {
+                continue;
+            };
+            let outcome = layout::open_file_unplaced(path);
+            outcomes[index] = ActionOutcome {
+                label: actions[index].to_string(),
+                success: outcome.is_ok(),
+                detail: "opened without placement (no permission)".to_owned(),
+            };
         }
         for index in app_placements {
             append_detail(&mut outcomes[index], "placement skipped (no permission)");
@@ -83,8 +166,11 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     // per target, each URL a tab of it. Targets on a disconnected display
     // open plainly instead of being forced onto another screen.
     for ((display_id, region), indices) in group_by_target(actions, &deferred_urls) {
-        if let Some(id) = display_id {
-            if !layout::display_connected(id) {
+        if matches!(
+            layout::resolve_display(display_id.as_deref()),
+            layout::DisplayTarget::Missing
+        ) {
+            {
                 for &i in &indices {
                     outcomes[i] = run_outcome(&actions[i]);
                     append_detail(&mut outcomes[i], "target display not connected");
@@ -92,7 +178,16 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 continue;
             }
         }
-        let display = layout::display_frame(display_id);
+        let display = layout::display_frame_for(display_id.as_deref());
+        layout::log_place(&format!(
+            "[url-group] {} url(s) → {region:?} display={:?} frame=({}, {}, {}x{})",
+            indices.len(),
+            display_id,
+            display.origin.x,
+            display.origin.y,
+            display.size.width,
+            display.size.height
+        ));
         let urls: Vec<&str> = indices
             .iter()
             .filter_map(|&i| match &actions[i] {
@@ -102,10 +197,15 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
             .collect();
         match layout::open_urls_in_placed_window(&urls, region, display) {
             Ok(placement) => {
-                println!(
-                    "[layout] {} url(s) → {region:?} ({placement:?})",
-                    urls.len()
-                );
+                layout::log_place(&format!("[url-group] placed → {region:?} ({placement:?})"));
+                // Bring the freshly placed tab group forward once while it
+                // loads: media sites hold autoplay when their window loads
+                // hidden. The final restack re-asserts the user's order.
+                let _ = Command::new("open")
+                    .args(["-a", "Google Chrome"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
                 for &i in &indices {
                     outcomes[i] = ActionOutcome {
                         label: actions[i].to_string(),
@@ -115,7 +215,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 }
             }
             Err(err) => {
-                eprintln!("[layout] urls → {region:?} failed: {err}");
+                layout::log_place(&format!("[url-group] FAILED → {region:?}: {err}"));
                 for &i in &indices {
                     outcomes[i] = ActionOutcome {
                         label: actions[i].to_string(),
@@ -127,28 +227,40 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         }
     }
 
+    let mut used_windows: std::collections::HashMap<String, Vec<layout::WindowHandle>> =
+        std::collections::HashMap::new();
     for &index in &app_placements {
         let action = &actions[index];
         let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
             continue;
         };
-        if let Some(id) = action.display() {
-            if !layout::display_connected(id) {
+        if matches!(
+            layout::resolve_display(action.display()),
+            layout::DisplayTarget::Missing
+        ) {
+            {
                 append_detail(&mut outcomes[index], "target display not connected");
                 continue;
             }
         }
-        let display = layout::display_frame(action.display());
-        match layout::place_app_window(name, region, display) {
-            Ok(placement) => {
-                println!("[layout] {action} → {region:?} ({placement:?})");
+        let display = layout::display_frame_for(action.display());
+        let exclude = used_windows
+            .get(name.as_str())
+            .map(|used| used.as_slice())
+            .unwrap_or(&[]);
+        match layout::place_app_window_excluding(name, region, display, exclude) {
+            Ok((placement, window)) => {
+                layout::log_place(&format!(
+                    "[place:app] {action} → {region:?} ({placement:?})"
+                ));
+                used_windows.entry(name.clone()).or_default().push(window);
                 append_detail(
                     &mut outcomes[index],
                     &format!("→ {region:?} ({placement:?})"),
                 );
             }
             Err(err) => {
-                eprintln!("[layout] {action} → {region:?} failed: {err}");
+                layout::log_place(&format!("[place:app] {action} FAILED → {region:?}: {err}"));
                 // The app itself opened; a failed snap is noted but does not
                 // fail the action.
                 append_detail(&mut outcomes[index], &format!("placement failed: {err}"));
@@ -157,22 +269,50 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
     }
 
     // Apps that restore their previous window position do so asynchronously
-    // after launch, undoing the snap — settle, then correct only windows
-    // that actually drifted, so settled ones never twitch.
+    // after launch, undoing the snap. The settle wait and drift-checked
+    // correction run detached so documents and restacking start right
+    // away — the correction only ever touches windows that drifted.
     if !app_placements.is_empty() {
-        std::thread::sleep(Duration::from_millis(700));
-        for &index in &app_placements {
-            let action = &actions[index];
-            let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
-                continue;
-            };
-            if let Some(id) = action.display() {
-                if !layout::display_connected(id) {
-                    continue;
+        // When Chrome also owns placed URL/document windows, a Chrome app
+        // action's reassert could grab the largest of those windows and
+        // drag it into the app's region — skip Chrome in that case.
+        let chrome_owns_placed_windows = !deferred_urls.is_empty()
+            || deferred_files.iter().any(|&i| match &actions[i] {
+                Action::OpenFile { path, .. } => {
+                    layout::file_handler_app(path).as_deref() == Some("Google Chrome")
                 }
-            }
-            let display = layout::display_frame(action.display());
-            layout::reassert_app_placement(name, region, display);
+                _ => false,
+            });
+        let jobs: Vec<(String, Region, core_graphics::geometry::CGRect)> = app_placements
+            .iter()
+            .filter_map(|&index| {
+                let action = &actions[index];
+                let (Action::OpenApp { name, .. }, Some(region)) = (action, action.region()) else {
+                    return None;
+                };
+                if chrome_owns_placed_windows && name == "Google Chrome" {
+                    return None;
+                }
+                if matches!(
+                    layout::resolve_display(action.display()),
+                    layout::DisplayTarget::Missing
+                ) {
+                    return None;
+                }
+                Some((
+                    name.clone(),
+                    region,
+                    layout::display_frame_for(action.display()),
+                ))
+            })
+            .collect();
+        if !jobs.is_empty() {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(700));
+                for (name, region, frame) in jobs {
+                    layout::reassert_app_placement(&name, region, frame);
+                }
+            });
         }
     }
 
@@ -183,17 +323,22 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
         let (Action::OpenFile { path, .. }, Some(region)) = (action, action.region()) else {
             continue;
         };
-        if let Some(id) = action.display() {
-            if !layout::display_connected(id) {
+        if matches!(
+            layout::resolve_display(action.display()),
+            layout::DisplayTarget::Missing
+        ) {
+            {
                 outcomes[index] = run_outcome(action);
                 append_detail(&mut outcomes[index], "target display not connected");
                 continue;
             }
         }
-        let display = layout::display_frame(action.display());
+        let display = layout::display_frame_for(action.display());
         outcomes[index] = match layout::open_file_in_placed_window(path, region, display) {
             Ok(placement) => {
-                println!("[layout] {action} → {region:?} ({placement:?})");
+                layout::log_place(&format!(
+                    "[place:file] {action} → {region:?} ({placement:?})"
+                ));
                 ActionOutcome {
                     label: action.to_string(),
                     success: true,
@@ -201,7 +346,7 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
                 }
             }
             Err(err) => {
-                eprintln!("[layout] {action} → {region:?} failed: {err}");
+                layout::log_place(&format!("[place:file] {action} FAILED → {region:?}: {err}"));
                 ActionOutcome {
                     label: action.to_string(),
                     success: false,
@@ -224,11 +369,20 @@ pub fn run_routine(actions: &[Action]) -> Vec<ActionOutcome> {
 /// Unplaced URLs are excluded from the verdict: they open as tabs of an
 /// existing window, and tab presence cannot be observed from outside.
 pub fn routine_already_assembled(actions: &[Action]) -> bool {
-    if !layout::is_trusted(false) {
-        return false;
-    }
     let mut apps: Vec<String> = Vec::new();
     for action in actions {
+        // Actions bound to a disconnected display are skipped by
+        // run_routine, so they must not count here either.
+        if action.region().is_some()
+            && matches!(
+                layout::resolve_display(action.display()),
+                layout::DisplayTarget::Missing
+            )
+        {
+            {
+                continue;
+            }
+        }
         let app_name = match action {
             Action::OpenApp { name, .. } => Some(name.clone()),
             Action::OpenUrl {
@@ -243,7 +397,10 @@ pub fn routine_already_assembled(actions: &[Action]) -> bool {
             }
         }
     }
-    !apps.is_empty() && apps.iter().all(|name| layout::app_window_ready(name))
+    // Window presence comes from the CG window list, so this verdict
+    // works even without Accessibility access. Batched: one process scan
+    // and one window enumeration for the whole routine.
+    layout::apps_all_have_windows(&apps)
 }
 
 /// Bring windows into list order: the app of action #1 ends frontmost.
@@ -257,8 +414,13 @@ pub fn routine_already_assembled(actions: &[Action]) -> bool {
 fn restack_frontmost_first(actions: &[Action]) {
     let mut entries: Vec<(String, usize)> = Vec::new();
     for (index, action) in actions.iter().enumerate() {
-        if let (Some(_), Some(display_id)) = (action.region(), action.display()) {
-            if !layout::display_connected(display_id) {
+        if action.region().is_some()
+            && matches!(
+                layout::resolve_display(action.display()),
+                layout::DisplayTarget::Missing
+            )
+        {
+            {
                 continue;
             }
         }
@@ -293,6 +455,13 @@ fn restack_frontmost_first(actions: &[Action]) {
         return;
     }
     entries.sort_by_key(|(_, index)| std::cmp::Reverse(*index));
+    layout::log_place(&format!(
+        "[restack] entries (back→front): {:?}",
+        entries
+            .iter()
+            .map(|(n, i)| format!("{n}#{i}"))
+            .collect::<Vec<_>>()
+    ));
 
     std::thread::spawn(move || {
         let ready_flags = |entries: &[(String, usize)]| -> Vec<bool> {
@@ -306,6 +475,14 @@ fn restack_frontmost_first(actions: &[Action]) {
         while std::time::Instant::now() < deadline && ready_flags(&entries).contains(&false) {
             std::thread::sleep(RESTACK_POLL);
         }
+        let flags = ready_flags(&entries);
+        let unready: Vec<&str> = entries
+            .iter()
+            .zip(flags.iter())
+            .filter(|(_, ok)| !**ok)
+            .map(|((n, _), _)| n.as_str())
+            .collect();
+        layout::log_place(&format!("[restack] first pass, unready={unready:?}"));
         activate_in_order(&entries);
 
         let after_first = ready_flags(&entries);
@@ -399,7 +576,7 @@ fn append_detail(outcome: &mut ActionOutcome, extra: &str) {
 
 /// Group action indices by their (display, region) target, preserving the
 /// order in which targets first appear.
-type PlacementTarget = (Option<u32>, Region);
+type PlacementTarget = (Option<String>, Region);
 
 fn group_by_target(actions: &[Action], indices: &[usize]) -> Vec<(PlacementTarget, Vec<usize>)> {
     let mut groups: Vec<(PlacementTarget, Vec<usize>)> = Vec::new();
@@ -407,7 +584,7 @@ fn group_by_target(actions: &[Action], indices: &[usize]) -> Vec<(PlacementTarge
         let Some(region) = actions[index].region() else {
             continue;
         };
-        let target = (actions[index].display(), region);
+        let target = (actions[index].display().map(str::to_owned), region);
         match groups.iter_mut().find(|(t, _)| *t == target) {
             Some((_, group)) => group.push(index),
             None => groups.push((target, vec![index])),
@@ -420,12 +597,12 @@ fn group_by_target(actions: &[Action], indices: &[usize]) -> Vec<(PlacementTarge
 mod tests {
     use super::*;
 
-    fn url_action(url: &str, region: Region, display: Option<u32>) -> Action {
+    fn url_action(url: &str, region: Region, display: Option<&str>) -> Action {
         match Action::open_url(url) {
             Action::OpenUrl { url, .. } => Action::OpenUrl {
                 url,
                 region: Some(region),
-                display,
+                display: display.map(str::to_owned),
             },
             other => other,
         }
@@ -448,7 +625,7 @@ mod tests {
     fn same_region_on_different_displays_stays_separate() {
         let actions = vec![
             url_action("https://a.com", Region::RightHalf, None),
-            url_action("https://b.com", Region::RightHalf, Some(2)),
+            url_action("https://b.com", Region::RightHalf, Some("uuid-b")),
         ];
         let groups = group_by_target(&actions, &[0, 1]);
         assert_eq!(groups.len(), 2);

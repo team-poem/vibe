@@ -11,6 +11,17 @@ use crate::layout::ax::{self, AxElement, Placement};
 use crate::layout::Region;
 
 const WINDOW_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
+/// Chrome cold-starting under a launch storm can take well past 8 s to
+/// show its first window — measured live at ~14 s with 7 tabs.
+const CHROME_WINDOW_WAIT: Duration = Duration::from_secs(20);
+/// Applied only when our spawn cold-starts Chrome (flags are ignored on
+/// hand-off to a running instance): media pages opened without a user
+/// gesture may start playback. Session-wide until Chrome quits — accepted
+/// trade-off so the routine's music actually starts.
+const CHROME_AUTOPLAY_FLAG: &str = "--autoplay-policy=no-user-gesture-required";
+/// In the dedicated-document route, fall back to "the only fresh window"
+/// when no title matches for this long.
+const CHROME_TITLE_FALLBACK: Duration = Duration::from_secs(6);
 const WINDOW_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, thiserror::Error)]
@@ -67,22 +78,66 @@ pub fn place_app_window(
     region: Region,
     display: CGRect,
 ) -> Result<Placement, LayoutError> {
+    place_app_window_excluding(app_name, region, display, &[]).map(|(placement, _)| placement)
+}
+
+/// Placement that also returns the window it used and skips windows in
+/// `exclude`, so repeated actions on one app each claim their own window.
+pub fn place_app_window_excluding(
+    app_name: &str,
+    region: Region,
+    display: CGRect,
+    exclude: &[ax::AxElement],
+) -> Result<(Placement, ax::AxElement), LayoutError> {
     if !is_trusted(false) {
         return Err(LayoutError::NotTrusted);
     }
     let pid = wait_for_pid(app_name)?;
     let app = ax::application_element(pid);
-    let window = wait_for_main_window(&app, app_name)?;
-    apply_placement(&window, region, display)
+    let window = wait_for_main_window_excluding(&app, app_name, exclude)?;
+    let placement = apply_placement(&window, region, display)?;
+    Ok((placement, window))
+}
+
+/// Wait until the app owns at least `min_windows` real windows — the
+/// stagger gate between two "open folder" actions on the same app.
+pub fn wait_app_window_count(app_name: &str, min_windows: usize, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(pid) = find_pid(app_name) {
+            if crate::layout::pid_real_window_count(pid) >= min_windows {
+                return true;
+            }
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(WINDOW_POLL_INTERVAL);
+    }
 }
 
 /// Wait until the app has windows, then return the largest one — the first
 /// AX window can be a splash screen or utility panel, not the main window.
 fn wait_for_main_window(app: &ax::AxElement, label: &str) -> Result<ax::AxElement, LayoutError> {
+    wait_for_main_window_excluding(app, label, &[])
+}
+
+/// Like [`wait_for_main_window`], but never returns a window already
+/// claimed by an earlier action — two "open this folder" actions on the
+/// same app must land on two different windows.
+fn wait_for_main_window_excluding(
+    app: &ax::AxElement,
+    label: &str,
+    exclude: &[ax::AxElement],
+) -> Result<ax::AxElement, LayoutError> {
     let deadline = Instant::now() + WINDOW_WAIT_TIMEOUT;
     loop {
         if let Ok(windows) = ax::windows(app) {
-            if let Some(window) = pick_main_window(windows) {
+            let fresh: Vec<ax::AxElement> = windows
+                .into_iter()
+                .filter(|w| !exclude.iter().any(|used| ax::same_element(w, used)))
+                .collect();
+            if let Some(window) = pick_main_window(fresh) {
                 return Ok(window);
             }
         }
@@ -106,14 +161,29 @@ fn pick_main_window(windows: Vec<ax::AxElement>) -> Option<ax::AxElement> {
         .map(|(window, _)| window)
 }
 
-/// Single non-blocking check: does the app have a window yet? Used by the
-/// restack guardian to react to slow launches without waiting for them.
+/// Single non-blocking check: does the app have a real window on any
+/// Space? Backed by the CoreGraphics window list, so it needs no
+/// Accessibility permission and sees minimized/other-Space windows AX
+/// cannot.
 pub fn app_window_ready(app_name: &str) -> bool {
     let Some(pid) = find_pid(app_name) else {
         return false;
     };
-    let app = ax::application_element(pid);
-    ax::windows(&app).map(|w| !w.is_empty()).unwrap_or(false)
+    crate::layout::pid_has_real_window(pid)
+}
+
+/// Batch variant for the assembled guard: one process scan and one
+/// window-list enumeration decide every app at once (~15 ms for a whole
+/// routine, vs. one scan + one enumeration per app).
+pub fn apps_all_have_windows(app_names: &[String]) -> bool {
+    if app_names.is_empty() {
+        return false;
+    }
+    let candidates = crate::layout::probe_find_all_pids(app_names);
+    let windowed = crate::layout::real_window_pids();
+    candidates
+        .iter()
+        .all(|pids| pids.iter().any(|pid| windowed.contains(&i64::from(*pid))))
 }
 
 /// Snap or, for `Centered`, move-only: the window keeps its natural size
@@ -164,12 +234,18 @@ pub fn open_urls_in_placed_window(
         return Err(LayoutError::AppNotFound("Google Chrome".to_owned()));
     };
 
+    quit_windowless_chrome();
     let snapshot = match find_pid("Google Chrome") {
         Some(pid) => ax::windows(&ax::application_element(pid)).unwrap_or_default(),
         None => Vec::new(),
     };
+    log_place(&format!(
+        "[url-window] snapshot={} window(s) before spawn",
+        snapshot.len()
+    ));
 
     Command::new(&chrome)
+        .arg(CHROME_AUTOPLAY_FLAG)
         .arg("--new-window")
         .args(urls)
         .stdout(Stdio::null())
@@ -180,10 +256,165 @@ pub fn open_urls_in_placed_window(
             source,
         })?;
 
-    let pid = wait_for_pid("Google Chrome")?;
-    let app = ax::application_element(pid);
-    let window = wait_for_window(&app, &snapshot, "Google Chrome")?;
-    apply_placement(&window, region, display)
+    let window = match wait_for_fresh_chrome_window(&snapshot) {
+        Ok(window) => window,
+        Err(err) => {
+            log_place(&format!("[url-window] fresh window NOT found: {err}"));
+            return Err(err);
+        }
+    };
+    let placement = apply_placement(&window, region, display)?;
+    log_place(&format!(
+        "[url-window] placed ({placement:?}) frame={:?}",
+        ax::window_frame(&window)
+    ));
+    Ok(placement)
+}
+
+/// Open a document in its own Chrome window and place it, identifying the
+/// right window by its title (the file name): the URL tab-group window can
+/// appear late during a cold start and must never be mistaken for the
+/// document window.
+fn open_path_in_dedicated_chrome_window(
+    path: &str,
+    region: Region,
+    display: CGRect,
+) -> Result<Placement, LayoutError> {
+    let Some(chrome) = find_chrome_binary() else {
+        return Err(LayoutError::AppNotFound("Google Chrome".to_owned()));
+    };
+    let snapshot = match find_pid("Google Chrome") {
+        Some(pid) => ax::windows(&ax::application_element(pid)).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Command::new(&chrome)
+        .arg(CHROME_AUTOPLAY_FLAG)
+        .arg("--new-window")
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| LayoutError::Spawn {
+            command: "chrome --new-window",
+            source,
+        })?;
+
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let started = Instant::now();
+    let deadline = started + CHROME_WINDOW_WAIT;
+    loop {
+        let candidates = crate::layout::probe_find_all_pids(&["Google Chrome".to_owned()])
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let mut fresh: Vec<ax::AxElement> = Vec::new();
+        for pid in candidates {
+            let app = ax::application_element(pid);
+            let Ok(windows) = ax::windows(&app) else {
+                continue;
+            };
+            fresh.extend(
+                windows
+                    .into_iter()
+                    .filter(|w| !snapshot.iter().any(|old| ax::same_element(w, old))),
+            );
+        }
+        let by_title = fresh.iter().position(|w| {
+            ax::window_title(w)
+                .map(|title| !stem.is_empty() && title.to_lowercase().contains(&stem))
+                .unwrap_or(false)
+        });
+        let chosen = by_title.or_else(|| {
+            // No title match yet: only fall back to "the single fresh
+            // window" once the title has had a fair chance to appear.
+            (started.elapsed() >= CHROME_TITLE_FALLBACK && fresh.len() == 1).then_some(0)
+        });
+        if let Some(index) = chosen {
+            let window = fresh.swap_remove(index);
+            log_place(&format!(
+                "[place:file] chrome window chosen (title_match={})",
+                by_title.is_some()
+            ));
+            return apply_placement(&window, region, display);
+        }
+        if Instant::now() >= deadline {
+            return Err(LayoutError::WindowTimeout("Google Chrome".to_owned()));
+        }
+        std::thread::sleep(WINDOW_POLL_INTERVAL);
+    }
+}
+
+/// A windowless resident Chrome (all windows closed, process alive —
+/// macOS keeps it until a real Quit) swallows our spawn as a hand-off and
+/// the autoplay flag with it. Nothing user-visible exists to lose, so quit
+/// it and let the next spawn cold-start with our flags applied. Chrome
+/// with real windows is in use and is never touched.
+fn quit_windowless_chrome() {
+    let pids = crate::layout::probe_find_all_pids(&["Google Chrome".to_owned()])
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    if pids.is_empty() {
+        return;
+    }
+    let windowed = crate::layout::real_window_pids();
+    if pids.iter().any(|pid| windowed.contains(&i64::from(*pid))) {
+        return;
+    }
+    log_place("[url-window] quitting windowless resident chrome for a cold start");
+    for pid in &pids {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let alive = crate::layout::probe_find_all_pids(&["Google Chrome".to_owned()])
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        if alive.is_empty() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    log_place("[url-window] windowless chrome did not exit in time");
+}
+
+/// Wait for a Chrome window that was not in `snapshot`, re-resolving the
+/// pid on every poll. During a cold start the `--new-window` hand-off stub
+/// (real `.app` path) and the browser main (code-sign-clone path) appear
+/// at different moments — watching a single pid captured once misses the
+/// window, which lands on whichever process wins.
+fn wait_for_fresh_chrome_window(snapshot: &[AxElement]) -> Result<AxElement, LayoutError> {
+    let deadline = Instant::now() + CHROME_WINDOW_WAIT;
+    loop {
+        let candidates = crate::layout::probe_find_all_pids(&["Google Chrome".to_owned()])
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        for pid in candidates {
+            let app = ax::application_element(pid);
+            let Ok(windows) = ax::windows(&app) else {
+                continue;
+            };
+            let fresh = windows
+                .into_iter()
+                .find(|w| !snapshot.iter().any(|old| ax::same_element(w, old)));
+            if let Some(window) = fresh {
+                return Ok(window);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(LayoutError::WindowTimeout("Google Chrome".to_owned()));
+        }
+        std::thread::sleep(WINDOW_POLL_INTERVAL);
+    }
 }
 
 /// Open a document with its default app and snap that app's window.
@@ -211,7 +442,7 @@ pub fn open_file_in_placed_window(
     // display's tab group — onto this file's region.
     if handler.as_deref() == Some("Google Chrome") && find_chrome_binary().is_some() {
         log_place("[place:file] chrome is the handler → dedicated-window route");
-        return open_urls_in_placed_window(&[path], region, display);
+        return open_path_in_dedicated_chrome_window(path, region, display);
     }
 
     let snapshot = handler
@@ -447,6 +678,52 @@ fn frontmost_pid() -> Option<i32> {
     first_pid(&output.stdout)
 }
 
+/// Open URLs in one fresh Chrome window without placing it — the
+/// no-Accessibility fallback that still avoids tab pile-up. Falls back to
+/// plain `open` per URL when Chrome is not installed.
+pub fn open_urls_unplaced(urls: &[&str]) -> Result<(), LayoutError> {
+    if urls.is_empty() {
+        return Ok(());
+    }
+    let Some(chrome) = find_chrome_binary() else {
+        for url in urls {
+            open_url_without_placement(url)?;
+        }
+        return Ok(());
+    };
+    Command::new(&chrome)
+        .arg(CHROME_AUTOPLAY_FLAG)
+        .arg("--new-window")
+        .args(urls)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| LayoutError::Spawn {
+            command: "chrome --new-window",
+            source,
+        })?;
+    Ok(())
+}
+
+/// Open a document without placement; Chrome-handled files go through the
+/// dedicated-window route so they never join an existing tab group.
+pub fn open_file_unplaced(path: &str) -> Result<(), LayoutError> {
+    if file_handler_app(path).as_deref() == Some("Google Chrome") && find_chrome_binary().is_some()
+    {
+        return open_urls_unplaced(&[path]);
+    }
+    Command::new("open")
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|source| LayoutError::Spawn {
+            command: "open <file>",
+            source,
+        })?;
+    Ok(())
+}
+
 fn open_url_without_placement(url: &str) -> Result<(), LayoutError> {
     Command::new("open")
         .arg(url)
@@ -471,44 +748,10 @@ fn find_chrome_binary() -> Option<PathBuf> {
     .find(|path| path.exists())
 }
 
-/// First window not present in `snapshot` (front-most first); with an empty
-/// snapshot this is simply the front window.
-fn wait_for_window(
-    app: &AxElement,
-    snapshot: &[AxElement],
-    label: &str,
-) -> Result<AxElement, LayoutError> {
-    let deadline = Instant::now() + WINDOW_WAIT_TIMEOUT;
-    loop {
-        if let Ok(windows) = ax::windows(app) {
-            let fresh = windows
-                .into_iter()
-                .find(|w| !snapshot.iter().any(|old| ax::same_element(w, old)));
-            if let Some(window) = fresh {
-                return Ok(window);
-            }
-        }
-        if Instant::now() >= deadline {
-            return Err(LayoutError::WindowTimeout(label.to_owned()));
-        }
-        std::thread::sleep(WINDOW_POLL_INTERVAL);
-    }
-}
-
-/// Resolve an app name to a pid. `pgrep -x` misses apps whose executable
-/// name differs from the app name (e.g. VS Code runs as "Electron"), so
-/// fall back to matching the bundle path.
+/// Resolve an app name to a pid via libproc executable-path lookup.
+/// `pgrep` was measured to miss Electron main processes entirely.
 fn find_pid(app_name: &str) -> Option<i32> {
-    let exact = Command::new("pgrep").args(["-x", app_name]).output().ok()?;
-    if let Some(pid) = first_pid(&exact.stdout) {
-        return Some(pid);
-    }
-    let bundle_pattern = format!("{app_name}.app/Contents/MacOS/");
-    let by_bundle = Command::new("pgrep")
-        .args(["-f", &bundle_pattern])
-        .output()
-        .ok()?;
-    first_pid(&by_bundle.stdout)
+    crate::layout::probe_find_pid(app_name)
 }
 
 fn first_pid(stdout: &[u8]) -> Option<i32> {

@@ -6,10 +6,11 @@ use std::ffi::c_void;
 
 use accessibility_sys::{
     kAXErrorAPIDisabled, kAXErrorCannotComplete, kAXErrorSuccess, kAXFocusedApplicationAttribute,
-    kAXPositionAttribute, kAXSizeAttribute, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint,
-    kAXValueTypeCGSize, kAXWindowsAttribute, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
-    AXUIElementCopyAttributeValue, AXUIElementCreateApplication, AXUIElementCreateSystemWide,
-    AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate, AXValueGetValue, AXValueRef,
+    kAXPositionAttribute, kAXSizeAttribute, kAXTitleAttribute, kAXTrustedCheckOptionPrompt,
+    kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowsAttribute, AXIsProcessTrusted,
+    AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
+    AXUIElementCreateSystemWide, AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate,
+    AXValueGetValue, AXValueRef,
 };
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFType, CFTypeRef, TCFType};
@@ -71,11 +72,35 @@ pub fn control_probe_ok() -> bool {
         let mut value: CFTypeRef = std::ptr::null();
         let code =
             AXUIElementCopyAttributeValue(system_wide, name.as_concrete_TypeRef(), &mut value);
-        if !value.is_null() {
-            CFRelease(value);
-        }
         CFRelease(system_wide as CFTypeRef);
-        code != kAXErrorAPIDisabled && code != kAXErrorCannotComplete
+        if code == kAXErrorAPIDisabled || code == kAXErrorCannotComplete {
+            if !value.is_null() {
+                CFRelease(value);
+            }
+            return false;
+        }
+        if value.is_null() {
+            return true;
+        }
+
+        // The stale-grant ghost state answers reads while every write
+        // fails with kAXErrorAPIDisabled (-25205) — probe with a no-op
+        // write (set a window's position to its current value) so trust
+        // reporting matches what placement will actually be allowed to do.
+        let app = AxElement(value as AXUIElementRef);
+        let Ok(windows) = windows(&app) else {
+            return true;
+        };
+        let Some(window) = windows.into_iter().next() else {
+            return true;
+        };
+        let Some(frame) = window_frame(&window) else {
+            return true;
+        };
+        !matches!(
+            set_point(&window, kAXPositionAttribute, frame.origin),
+            Err(AxError::Call { code, .. }) if code == kAXErrorAPIDisabled
+        )
     }
 }
 
@@ -123,6 +148,13 @@ fn window_position(window: &AxElement) -> Option<CGPoint> {
         )
     };
     ok.then_some(point)
+}
+
+/// Title of a window, e.g. to tell a document window apart from a tab
+/// group when one app owns both.
+pub fn window_title(window: &AxElement) -> Option<String> {
+    let value = copy_attribute(window, kAXTitleAttribute).ok()?;
+    value.downcast::<CFString>().map(|title| title.to_string())
 }
 
 /// Current size of a window, for move-without-resize placement.

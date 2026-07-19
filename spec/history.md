@@ -1629,3 +1629,269 @@ Performance Pass, 다중 모니터.
 - fix/single-instance, feat/app-open-path, feat/skip-assembled,
   feat/quiet-gate(+latency), fix/run-guard, fix/execution-choreography,
   fix/chrome-file-window, fix/doc-warm-reopen, placement.log 진단 영속화.
+
+## 2026-07-17 (fix/pid-window-probes)
+
+### 변경
+
+- `layout/probe.rs` 신설: pid 조회를 pgrep → libproc(proc_listpids +
+  proc_pidpath 경로 매칭)으로 교체. pgrep 은 Electron 메인 프로세스를
+  통째로 누락함을 실측(`pgrep -x Cursor` 무검출, ps 는 메인 표시) —
+  가드 상시 무력화·배치 8s 타임아웃·재스택 순서 열화의 공통 뿌리였음.
+  헬퍼는 Frameworks 경로 배제로 걸러냄.
+- 창 존재 판정을 AX → CGWindowListCopyWindowInfo 로 교체: Accessibility
+  권한 불필요, 다른 Space·최소화 창도 관측. ownerPID 매칭(로컬라이즈된
+  ownerName 사용 금지) + layer 0 + 200×150 최소 크기로 팬텀 창(메뉴바
+  백킹 스트립, 탭 프리뷰, 1×1) 배제 — 합의 판별식의 보수적 변형
+  (onscreen 절 제거로 온스크린 팬텀 리스크 제거, 실창 판정 방향은 동일).
+
+### 검증
+
+- 경로 판별 단위 테스트 2종 + 수동 스모크(`cargo test live_probe --
+  --ignored`)로 실행 중 Cursor pid·실창 검출 확인. clippy 클린.
+
+## 2026-07-17 (fix/assembled-guard-v2)
+
+### 변경
+
+- 조립 완료 가드에서 is_trusted 게이트 제거: 창 판정이 CG 윈도우 리스트
+  기반이라 Accessibility 미승인 상태에서도 가드가 작동 — 미신뢰 시
+  박수마다 URL 이 기존 탭에 쌓이던 참사를 가드 차원에서 차단.
+- 미연결 디스플레이 액션을 판정에서 제외 (run_routine 과 대칭).
+- 미신뢰 실행 폴백 개선: 배치 URL 은 `chrome --new-window` 한 창으로,
+  Chrome 핸들러 문서도 동일 경로로 — 탭 쌓임 원천 소멸 (배치만 포기).
+- 가드 차단 시에도 쿨다운 스탬프 (토론 합의 A 조건): 희소 임펄스 열이
+  가드 차단을 반복하다 창 상태 변화 순간 지연 오발하는 루프 봉쇄.
+  정당 박수의 경우 데스크톱이 이미 조립돼 있어 비용 0.
+
+### 검증
+
+- cargo test / clippy 클린. 라이브 검증은 통합 빌드에서.
+
+## 2026-07-17 (feat/impulse-train-reject)
+
+### 변경
+
+- 정확히 2개 규칙: 페어 확정 시 직전 `max_interval+500ms`(감도 연동) 창의
+  detector 이벤트가 2개 초과면 트리거 폐기 + matcher 리셋 — 페트병 크러시
+  등 밀집 임펄스 열 차단. 이벤트 이력은 3s 링으로 유지.
+- 확인 대기 중 새 임펄스 감지 → 게이트 즉시 폐기 + matcher 리셋.
+- 정적 게이트 borderline 반전: 정적 스트릭 리셋 ≥3회면 창 끝 판정을
+  발화→폐기로 — 불응기에 먹혀 이벤트를 못 만드는 산발 크래클(loud 청크로만
+  관측)까지 커버. 지연 추가 없음(CONFIRM 100ms 유지).
+- 감지 진단을 `EngineEvent::Diagnostic` 채널로 이벤트 스레드에 위임해
+  placement.log 영속화 (감지 스레드 파일 I/O 금지 — 토론 합의 B 조건).
+  발화 후 1s 내 지각 임펄스도 기록해 희소 열 잔여 위험 데이터 축적.
+
+### 검증
+
+- 신규 테스트 4종(2개=페어 / 3개=열 / 창 밖 이벤트 제외 / 분절 정적
+  borderline 폐기·비발화) 포함 69개 통과, clippy 클린.
+
+## 2026-07-17 (fix/display-uuid)
+
+### 진단 (3자 토론 합의)
+
+- 액션의 display 필드가 CGDisplay 숫자 id 를 저장했는데, 이 id 는
+  재부팅/재연결로 드리프트함. 실측: 루틴에 display 2(8개)·3(10여 개)
+  혼재, 현재 연결은 id 1(맥북)·3(울트라와이드) — id 2 액션은 침묵 스킵
+  (= "모니터1로 안 감"), id 3 만 착지 (= "모니터2에 몰림").
+- 자동 힐링 휴리스틱은 정책 기각: 고아 세트가 "옮겨진 의도"인지 "버려진
+  잔재"인지 구별할 변수가 데이터에 없고, 실제 이 사례의 d2 세트는 구버전
+  복사본이라 힐링 시 맥북에 옛 레이아웃 8개가 쏟아졌을 것. 오힐링 비용
+  ≫ 미힐링 비용이므로 어떤 조건에서도 자동 재타깃 금지.
+
+### 변경
+
+- display 저장을 안정 UUID 문자열로 전환 (`CGDisplayCreateUUIDFromDisplayID`).
+  serde 는 숫자·문자열 양쪽 수용(`de_display`) — 구파일 로드 불파손.
+- 스토어 로드 시 1회 마이그레이션: 숫자 id 가 현재 연결 디스플레이와
+  일치할 때만 그 UUID 로 치환, 불일치는 그대로 보존(실행 스킵 + 편집기
+  offlinePlacements 배너 표면화).
+- 실행 경로를 resolve_display(Main/Id/Missing) 기반으로 재편,
+  DisplayInfo 에 uuid 추가, 프론트 전층(display 필드·뷰 상태·그룹 키·탭·
+  미니맵)을 uuid 문자열 키로 전환.
+
+### 검증
+
+- 마이그레이션 단위 테스트(치환/고아 보존/멱등) 포함 cargo test 통과,
+  clippy 클린, tsc/vite 빌드 통과.
+
+## 2026-07-17 (fix/exec-latency)
+
+### 변경
+
+- 앱 배치 settle(700ms 대기 + 드리프트 재확인)을 분리 스레드로 위임 —
+  문서 열기·재스택이 즉시 시작돼 직렬 지연 700ms 제거. Chrome 이 배치
+  URL/문서 창을 함께 소유하는 루틴에선 Chrome 앱 액션의 재확인을 스킵
+  (최대 면적 창 오인으로 URL 그룹 창을 끌어오는 이중 역할 줄다리기 방지
+  — 토론 합의 B 조건).
+- 조립 가드 일괄 판정: libproc 프로세스 스캔 1회 + CG 윈도우 리스트 열거
+  1회로 루틴 전체 앱을 판정 (기존 앱당 각 1회 → 전체 ~15ms). 판별 상수는
+  단건 경로와 공유.
+
+### 검증
+
+- cargo test 68개(＋마이그레이션)·live_probe 스모크 통과, clippy 클린.
+
+## 2026-07-17 (fix/placement-telemetry)
+
+### 변경
+
+- 배치 파이프라인 전 구간 계측을 placement.log 로 영속화: 실행 시작/
+  디스플레이 스킵 사유, URL 그룹(대상 프레임·스냅샷 창 수·fresh 창
+  탐지 성패·최종 프레임), 앱/문서 배치 성패, 재스택 엔트리와 1차 패스
+  시점의 unready 목록. println 전용이라 Finder 실행에서 소실되던
+  관측 사각지대 제거 — "PDF 미배치·순서 붕괴" 재보고의 정밀 진단 목적.
+
+### 검증
+
+- cargo test/clippy 통과. 다음 실측 1회로 원인 특정 예정.
+
+## 2026-07-17 (fix/chrome-clone-pid)
+
+### 진단 (텔레메트리 → 실측 확정)
+
+- 계측 로그: URL 그룹·PDF 모두 "fresh window NOT found (8s)", 재스택
+  unready=[Google Chrome] 영구 — Chrome 창 탐지 전면 실패가 세 증상
+  (배치 실패·순서 붕괴·자동재생 중단)의 단일 원인.
+- 실측: `proc_pidpath(chrome)` = `…/com.google.Chrome.code_sign_clone/…/
+  Google Chrome.app.bundle/Contents/MacOS/Google Chrome` — 최신 Chrome 은
+  메인 바이너리를 **code-sign clone**(`.app.bundle`) 경로에서 실행. 기존
+  매칭(`.app/Contents/MacOS/`)은 항상 불일치 → find_pid None. 대기 중엔
+  우리가 스폰한 핸드오프 스텁(진짜 .app 경로, 창 없음)이 잡혀 "창 없는
+  Chrome"을 8초 대기 → WindowTimeout — 로그와 정확히 일치.
+
+### 변경
+
+- `path_matches_app` 에 `.app.bundle`(code-sign clone) 형태 추가.
+- 동명 다중 매치(브라우저 본체 + 핸드오프 스텁) 시 **실창 보유 pid 우선**
+  선택. 가드 일괄 판정도 이름당 후보 전부 수집 후 "실창 보유 후보 존재"
+  기준으로 변경 (`find_all_pids`).
+- 회귀 테스트: 클론 경로 매칭. 라이브 프로브로 chrome pid·AX 창 3개
+  확인.
+
+## 2026-07-17 (fix/chrome-cold-start)
+
+### 진단 (텔레메트리)
+
+- 클론 픽스 후 실행: PDF 는 맥북 전체화면 정상 배치, 재스택 unready=[],
+  가드 정상 — 그러나 URL 그룹(7탭)은 snapshot=0(Chrome 콜드 스타트)에서
+  8s 창 대기 실패. 콜드 스타트 중 핸드오프 스텁(.app 경로)과 본체(클론
+  경로)가 시간차로 등장하는데, 대기가 최초 1회 잡은 pid 에 고정되어
+  창이 생기는 본체 pid 를 놓침. 창은 만들어지되 배치를 못 받음.
+
+### 변경
+
+- Chrome 창 대기를 `wait_for_fresh_chrome_window` 로 교체: 매 폴마다
+  이름에 응답하는 모든 후보 pid 를 재탐색해 각 pid 의 AX 창에서 스냅샷
+  대비 신규 창을 찾음. 단일 pid 고정 대기(wait_for_window) 제거.
+
+### 검증
+
+- cargo test/clippy 통과. 라이브 검증: Chrome 종료 상태(콜드)에서 박수
+  → 7탭 창 우측 배치 확인이 판정 기준.
+
+## 2026-07-18 (fix/multi-window-choreo)
+
+### 진단 (텔레메트리)
+
+- Chrome 콜드 스타트가 런치 폭풍에서 8s 를 초과(~14s 실측)해 URL 창
+  대기가 타임아웃되고, 늦게 나타난 7탭 창을 PDF 루트가 오인 배치.
+- 같은 앱(Cursor)에 폴더 열기 2발이 동시에 나가면 odoc 이벤트가 병합돼
+  "Untitled (Workspace)" 멀티루트 한 창이 됨. 배치도 동일 창을 두 번
+  집는 구조적 결함.
+- 유튜브 자동재생: 로드 중 창이 가려지면 미디어 사이트가 재생을 유보.
+
+### 변경
+
+- Chrome 창 대기 20s 로 연장(콜드 스타트 실측 반영).
+- Chrome 문서 루트를 창 제목(파일명 stem) 매칭으로 식별하는 전용 경로로
+  분리 — URL 그룹 창 오인 원천 차단. 6s 후 유일 신규 창 폴백.
+- 같은 앱 경로 열기 시차 분리: 이전 창 등장(CG 창 수) 확인 후 다음 폴더
+  오픈 — 워크스페이스 병합 차단.
+- 같은 앱 반복 배치에 사용 창 제외 목록(place_app_window_excluding) —
+  Cursor 창 2개가 각자 배치됨.
+- URL 그룹 배치 직후 Chrome 1회 활성화(합의된 자동재생 폴백): 로드 중
+  전면 확보, 최종 순서는 재스택이 재확정.
+
+### 검증
+
+- cargo test/clippy 통과. 라이브 판정 기준: Chrome·Cursor 종료 상태에서
+  박수 → Cursor 별창 2개 좌측, 7탭 우측 배치, PDF 맥북, 유튜브 재생.
+
+## 2026-07-18 (fix/trust-write-probe)
+
+### 진단 (텔레메트리)
+
+- 실행 로그: 배치 시도 전부 `AXError -25205 (kAXErrorAPIDisabled)` —
+  유령 TCC 상태에서 읽기 프로브는 통과해 is_trusted 가 true 로 거짓 보고,
+  배너 없이 전 배치가 조용히 실패.
+- 울트라와이드 UUID 는 실측상 저장값과 일치 — 실행 순간 디스플레이가
+  활성 목록에 없던 wake 직후 레이스로 판정 (11개 액션 skip 로그).
+
+### 변경
+
+- 신뢰 프로브에 무해한 쓰기 검증 추가: 최전면 앱 창의 위치를 현재 값
+  그대로 재설정해 -25205 를 감지 — 유령 상태가 이제 배너/복구 버튼으로
+  표면화됨.
+- 실행 시작 시 참조 디스플레이가 missing 이면 최대 3s(0.5s×6) 재열거
+  대기 후 판정 — wake 직후 외장 모니터 늦은 재등록 흡수.
+
+### 검증
+
+- cargo test/clippy 통과.
+
+## 2026-07-19 (feat/autoplay-flag)
+
+### 변경
+
+- Chrome 스폰 3경로(URL 그룹·전용 문서 창·미신뢰 폴백)에
+  `--autoplay-policy=no-user-gesture-required` 플래그 추가. 실행 중인
+  인스턴스로 핸드오프될 땐 무시되고, 루틴이 Chrome 을 콜드 스타트하는
+  경우(작업 시작 시나리오)에만 적용되어 활성 탭의 미디어가 제스처 없이
+  재생됨. 트레이드오프: 해당 Chrome 세션 동안 전 사이트 자동재생 허용
+  — 사용자 승인 완료.
+
+### 검증
+
+- cargo test/clippy 통과. 라이브: Chrome 종료 상태에서 박수 → 유튜브
+  활성 탭 자동재생 확인이 판정 기준.
+
+## 2026-07-19 (fix/windowless-chrome-restart)
+
+### 진단 (실측)
+
+- 자동재생 플래그 미발동: 실행 중 Chrome 명령줄에 플래그 부재 + 로그상
+  창 생성 1s(웜 인스턴스). 창을 모두 닫아도 Chrome 프로세스는 상주하며
+  (macOS 는 ⌘Q 전까지 종료 안 함) 스폰이 핸드오프로 흡수되어 콜드
+  스타트 플래그가 버려짐.
+
+### 변경
+
+- URL 그룹 오픈 직전 `quit_windowless_chrome`: Chrome 이 "실창 0개 상주"
+  상태면 SIGTERM 으로 종료(최대 3s 대기) 후 콜드 스타트 — 잃을 창이
+  없으므로 무손실이고, 이후 스폰에 자동재생 플래그가 적용됨. 실창이
+  있는 Chrome 은 사용 중이므로 절대 건드리지 않음.
+
+### 검증
+
+- cargo test/clippy 통과. 라이브: 창만 닫은 Chrome 상태에서 박수 →
+  유튜브 자동재생 확인이 판정 기준.
+
+## 2026-07-19 (release 0.1.5)
+
+### 변경
+
+- 버전 0.1.5 (tauri.conf / Cargo.toml / 설정 화면 표기).
+
+### 포함 범위 (v0.1.4 이후 12커밋)
+
+- 감지: feat/impulse-train-reject (정확히 2개 규칙·게이트 강화·진단 채널).
+- 탐지 기반: fix/pid-window-probes (libproc·CGWindowList),
+  fix/chrome-clone-pid, fix/chrome-cold-start.
+- 실행: fix/assembled-guard-v2, fix/exec-latency, fix/multi-window-choreo
+  (같은 앱 별창·창 제외 배치·Chrome 20s 대기·제목 매칭),
+  fix/trust-write-probe, fix/windowless-chrome-restart, feat/autoplay-flag.
+- 데이터: fix/display-uuid (안정 UUID 마이그레이션).
+- 관측성: fix/placement-telemetry.

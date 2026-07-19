@@ -10,6 +10,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::layout::Region;
 
+/// Accepts both the legacy numeric display id and the current UUID
+/// string, so pre-migration routine files never fail to load.
+fn de_display<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Num(u64),
+        Str(String),
+    }
+    Ok(
+        Option::<Raw>::deserialize(deserializer)?.map(|raw| match raw {
+            Raw::Num(id) => id.to_string(),
+            Raw::Str(uuid) => uuid,
+        }),
+    )
+}
+
 /// A single macOS action a routine can execute, optionally snapped to a
 /// screen region after it opens. MVP supports launching an app and opening
 /// a URL; further kinds live in the `poc/action-runner` branch until they
@@ -25,23 +45,38 @@ pub enum Action {
         path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Region>,
-        /// Display the region maps onto; `None` = main display.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        display: Option<u32>,
+        /// Display the region maps onto, as a stable display UUID;
+        /// `None` = main display. Legacy files stored numeric CGDisplay
+        /// ids, which drift across reboots — they are accepted on load
+        /// and migrated by the store.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "de_display"
+        )]
+        display: Option<String>,
     },
     OpenUrl {
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Region>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        display: Option<u32>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "de_display"
+        )]
+        display: Option<String>,
     },
     OpenFile {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Region>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        display: Option<u32>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "de_display"
+        )]
+        display: Option<String>,
     },
 }
 
@@ -87,11 +122,19 @@ impl Action {
         }
     }
 
-    pub fn display(&self) -> Option<u32> {
+    pub fn display(&self) -> Option<&str> {
         match self {
             Self::OpenApp { display, .. }
             | Self::OpenUrl { display, .. }
-            | Self::OpenFile { display, .. } => *display,
+            | Self::OpenFile { display, .. } => display.as_deref(),
+        }
+    }
+
+    pub fn display_mut(&mut self) -> &mut Option<String> {
+        match self {
+            Self::OpenApp { display, .. }
+            | Self::OpenUrl { display, .. }
+            | Self::OpenFile { display, .. } => display,
         }
     }
 

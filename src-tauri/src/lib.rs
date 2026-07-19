@@ -437,6 +437,11 @@ pub fn run() {
                         return;
                     };
                     if action::routine_already_assembled(&routine.actions) {
+                        // Stamp the cooldown even when blocked: the trigger
+                        // happened, and if it was leaked noise this stops a
+                        // sparse impulse train from re-testing the guard
+                        // until a window-state change mis-fires it.
+                        LAST_RUN_STARTED_MS.store(now, std::sync::atomic::Ordering::Relaxed);
                         layout::log_place("[trigger] ignored — routine already assembled");
                         return;
                     }
@@ -449,6 +454,9 @@ pub fn run() {
                         outcomes,
                     });
                     let _ = trigger_app.emit("exec-log://updated", ());
+                }
+                EngineEvent::Diagnostic(message) => {
+                    layout::log_place(&message);
                 }
                 EngineEvent::CaptureFailed(message) => {
                     eprintln!("[audio] capture failed: {message}");
