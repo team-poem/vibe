@@ -1878,3 +1878,20 @@ Performance Pass, 다중 모니터.
 
 - cargo test/clippy 통과. 라이브: 창만 닫은 Chrome 상태에서 박수 →
   유튜브 자동재생 확인이 판정 기준.
+
+## 2026-07-19 (release 0.1.5)
+
+### 변경
+
+- 버전 0.1.5 (tauri.conf / Cargo.toml / 설정 화면 표기).
+
+### 포함 범위 (v0.1.4 이후 12커밋)
+
+- 감지: feat/impulse-train-reject (정확히 2개 규칙·게이트 강화·진단 채널).
+- 탐지 기반: fix/pid-window-probes (libproc·CGWindowList),
+  fix/chrome-clone-pid, fix/chrome-cold-start.
+- 실행: fix/assembled-guard-v2, fix/exec-latency, fix/multi-window-choreo
+  (같은 앱 별창·창 제외 배치·Chrome 20s 대기·제목 매칭),
+  fix/trust-write-probe, fix/windowless-chrome-restart, feat/autoplay-flag.
+- 데이터: fix/display-uuid (안정 UUID 마이그레이션).
+- 관측성: fix/placement-telemetry.
