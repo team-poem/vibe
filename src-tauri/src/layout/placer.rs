@@ -234,6 +234,7 @@ pub fn open_urls_in_placed_window(
         return Err(LayoutError::AppNotFound("Google Chrome".to_owned()));
     };
 
+    quit_windowless_chrome();
     let snapshot = match find_pid("Google Chrome") {
         Some(pid) => ax::windows(&ax::application_element(pid)).unwrap_or_default(),
         None => Vec::new(),
@@ -344,6 +345,45 @@ fn open_path_in_dedicated_chrome_window(
         }
         std::thread::sleep(WINDOW_POLL_INTERVAL);
     }
+}
+
+/// A windowless resident Chrome (all windows closed, process alive —
+/// macOS keeps it until a real Quit) swallows our spawn as a hand-off and
+/// the autoplay flag with it. Nothing user-visible exists to lose, so quit
+/// it and let the next spawn cold-start with our flags applied. Chrome
+/// with real windows is in use and is never touched.
+fn quit_windowless_chrome() {
+    let pids = crate::layout::probe_find_all_pids(&["Google Chrome".to_owned()])
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    if pids.is_empty() {
+        return;
+    }
+    let windowed = crate::layout::real_window_pids();
+    if pids.iter().any(|pid| windowed.contains(&i64::from(*pid))) {
+        return;
+    }
+    log_place("[url-window] quitting windowless resident chrome for a cold start");
+    for pid in &pids {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let alive = crate::layout::probe_find_all_pids(&["Google Chrome".to_owned()])
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        if alive.is_empty() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    log_place("[url-window] windowless chrome did not exit in time");
 }
 
 /// Wait for a Chrome window that was not in `snapshot`, re-resolving the
